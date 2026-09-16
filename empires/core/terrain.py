@@ -52,6 +52,14 @@ YIELDS: dict[Terrain, Resource] = {
 # (``np.isin(terrain, HARVESTABLE_TERRAIN)``) without rebuilding it each call.
 HARVESTABLE_TERRAIN: tuple[int, ...] = tuple(int(t) for t in YIELDS)
 
+# The reverse of YIELDS: which terrain types supply a given resource. Used when
+# a villager's tile runs dry and it goes looking for more of the same thing.
+# Derived rather than written out, so it cannot fall out of step with YIELDS.
+TERRAIN_FOR_RESOURCE: dict[Resource, tuple[int, ...]] = {
+    resource: tuple(int(t) for t, r in YIELDS.items() if r is resource)
+    for resource in Resource
+}
+
 
 def is_passable(t: int) -> bool:
     return PASSABLE[Terrain(t)]

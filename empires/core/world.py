@@ -23,12 +23,34 @@ import numpy as np
 
 from ..config import SimConfig
 from . import mapgen
-from .commands import Command, Gather, Move, Stop
-from .entities import Building, Order, Player, Unit, UnitKind
+from .commands import CancelTrain, Command, Gather, Move, Stop, Train
+from .entities import (
+    BUILDING_SPECS,
+    MAX_QUEUE,
+    UNIT_SPECS,
+    Building,
+    BuildingKind,
+    Order,
+    Player,
+    Unit,
+    UnitKind,
+)
 from .pathfinding import find_path, path_to_adjacent
-from .terrain import YIELDS, Terrain, is_harvestable, is_passable
+from .terrain import (
+    TERRAIN_FOR_RESOURCE,
+    YIELDS,
+    Resource,
+    Terrain,
+    is_harvestable,
+    is_passable,
+)
 
 Tile = tuple[int, int]
+
+# How many candidate tiles a villager will path-test when looking for more
+# of its resource. Sorted nearest-first, so the first is almost always the
+# answer; the cap stops a walled-off patch turning into a pile of A* runs.
+RETARGET_CANDIDATES = 8
 
 
 @dataclass
@@ -36,6 +58,50 @@ class TickReport:
     """What happened during one tick. The env turns this into rewards."""
 
     gathered: list[int]  # resource points deposited this tick, per player
+    trained: list[int]   # units that finished training this tick, per player
+
+
+@dataclass(frozen=True)
+class VillagerActivity:
+    """What a player's Villagers are doing right now.
+
+    Two different questions get asked about Villagers, and conflating them is
+    how this went wrong twice:
+
+    * **What is it physically doing?** ``harvesting``, ``walking`` and ``idle``
+      partition the whole population -- exactly one applies to each Villager,
+      and they always sum to ``total``. These are what the HUD shows, because
+      they are what you can see happening on screen.
+    * **What is it assigned to?** ``gathering`` counts Villagers tasked to a
+      resource whether they are walking to it, harvesting it, or hauling a load
+      home. It deliberately *overlaps* the three above and is not part of the
+      partition.
+
+    Classifying by order alone put every Villager walking to a bush under
+    "gathering", so the HUD's movement count sat at zero while four of them
+    were plainly crossing the map.
+
+    ``walking`` means "has somewhere left to walk", which is a close proxy for
+    motion but not a frame-exact trace of it. At a state change it can differ by
+    one tick in either direction:
+
+    * routing is lazy, so a Villager that has just filled its load holds no path
+      until the next tick computes one -- for that tick it reads as
+      ``harvesting``, which is what it looks like, standing at the bush;
+    * a Villager arriving within reach of its target stops with leftover
+      waypoints still queued, so for that tick it reads as ``walking`` while
+      already harvesting.
+
+    At 20 ticks per second either is 50ms and invisible. It is spelled out only
+    so the numbers are not mistaken for an exact motion trace.
+    """
+
+    total: int
+    harvesting: int  # arrived, working a resource or unloading in place
+    walking: int     # in transit -- to a resource, home with a load, or a move order
+    idle: int
+    gathering: int   # assigned to a resource; overlaps harvesting and walking
+    carrying: int    # resource points currently being hauled
 
 
 class World:
@@ -54,20 +120,20 @@ class World:
         # Cached passability. Invalidated whenever terrain or buildings change.
         self._blocked: np.ndarray | None = None
 
-        # Every town centre goes down first, so worker placement below sees the
-        # finished set of obstacles rather than a half-built map.
+        # Every Town Center goes down first, so villager placement below sees
+        # the finished set of obstacles rather than a half-built map.
         for pid, (sx, sy) in enumerate(start_tiles):
-            self.add_building(pid, sx, sy)
+            self.add_building(pid, BuildingKind.TOWN_CENTER, sx, sy)
 
         for pid, (sx, sy) in enumerate(start_tiles):
-            for i in range(self.cfg.start_workers):
-                # Fan the starting workers out around the town centre, snapping
-                # to open ground so a worker can never begin inside terrain.
+            for i in range(self.cfg.start_villagers):
+                # Fan the starting villagers out around the Town Center,
+                # snapping to open ground so none can begin inside terrain.
                 ox = (i % 2) * 3 - 1
                 oy = (i // 2) * 3 - 1
                 tile = self.nearest_free_tile(sx + ox, sy + oy)
                 if tile is not None:
-                    self.add_unit(pid, UnitKind.WORKER, *tile)
+                    self.add_unit(pid, UnitKind.VILLAGER, *tile)
 
     # ------------------------------------------------------------------ setup
 
@@ -84,12 +150,21 @@ class World:
         return self._next_id - 1
 
     def add_unit(self, owner: int, kind: UnitKind, tx: int, ty: int) -> Unit:
-        unit = Unit(uid=self._alloc_id(), owner=owner, kind=kind, x=tx + 0.5, y=ty + 0.5)
+        unit = Unit(
+            uid=self._alloc_id(), owner=owner, kind=kind,
+            x=tx + 0.5, y=ty + 0.5, hp=UNIT_SPECS[kind].hp,
+        )
         self.units[unit.uid] = unit
         return unit
 
-    def add_building(self, owner: int, tx: int, ty: int, w: int = 2, h: int = 2) -> Building:
-        b = Building(bid=self._alloc_id(), owner=owner, x=tx, y=ty, w=w, h=h)
+    def add_building(self, owner: int, kind: BuildingKind, tx: int, ty: int) -> Building:
+        """Place a building. Footprint and hit points come from its spec, so no
+        caller has to remember how big a Town Center is."""
+        spec = BUILDING_SPECS[kind]
+        b = Building(
+            bid=self._alloc_id(), owner=owner, kind=kind, x=tx, y=ty,
+            w=spec.width, h=spec.height, hp=spec.hp, is_dropoff=spec.is_dropoff,
+        )
         self.buildings[b.bid] = b
         self._blocked = None
         return b
@@ -112,12 +187,37 @@ class World:
     def units_of(self, owner: int) -> list[Unit]:
         return [u for u in self.units.values() if u.owner == owner]
 
-    def unit_at(self, tile: Tile, owner: int | None = None) -> Unit | None:
+    def villager_activity(self, owner: int) -> VillagerActivity:
+        """Economy summary for ``owner``'s Villagers.
+
+        The single source of truth for "how many are working": the HUD and the
+        observation encoder both read it, so they cannot drift apart. Only units
+        that can gather are counted -- a Soldier standing still is not an idle
+        Villager.
+        """
+        total = harvesting = walking = idle = gathering = carrying = 0
         for uid in sorted(self.units):
             u = self.units[uid]
-            if u.tile == tile and (owner is None or u.owner == owner):
-                return u
-        return None
+            if u.owner != owner or not u.spec.can_gather:
+                continue
+            total += 1
+            carrying += u.carrying
+            if u.order in (Order.GATHER, Order.RETURN):
+                gathering += 1
+
+            # Physical state, keyed off the path rather than the order: a
+            # Villager with somewhere left to walk is walking, whatever the
+            # reason. Branching this way is exhaustive by construction, so a
+            # new Order cannot quietly fall through all three buckets.
+            if u.path:
+                walking += 1
+            elif u.order is Order.IDLE:
+                idle += 1
+            else:
+                # Arrived and working in place: harvesting a tile, or standing
+                # at the drop-off about to unload.
+                harvesting += 1
+        return VillagerActivity(total, harvesting, walking, idle, gathering, carrying)
 
     def building_at(self, tile: Tile) -> Building | None:
         for b in self.buildings.values():
@@ -150,13 +250,16 @@ class World:
 
     def step(self, commands: list[Command] | None = None) -> TickReport:
         """Advance the simulation by exactly one tick."""
-        report = TickReport(gathered=[0] * len(self.players))
+        n = len(self.players)
+        report = TickReport(gathered=[0] * n, trained=[0] * n)
 
         for cmd in commands or ():
             self._apply_command(cmd)
 
         # Iterate in id order so the update does not depend on dict insertion
         # history -- one of the small things that keeps replays reproducible.
+        for bid in sorted(self.buildings):
+            self._update_building(self.buildings[bid], report)
         for uid in sorted(self.units):
             self._update_unit(self.units[uid], report)
 
@@ -174,6 +277,10 @@ class World:
                 out.append(u)
         return out
 
+    def _owned_building(self, owner: int, bid: int) -> Building | None:
+        b = self.buildings.get(bid)
+        return b if b is not None and b.owner == owner else None
+
     def _apply_command(self, cmd: Command) -> None:
         if isinstance(cmd, Stop):
             for u in self._owned(cmd):
@@ -181,6 +288,23 @@ class World:
                 u.path = []
                 u.target = None
                 u.gather_timer = 0
+                u.gather_resource = None
+            return
+
+        if isinstance(cmd, Train):
+            self._apply_train(cmd)
+            return
+
+        if isinstance(cmd, CancelTrain):
+            b = self._owned_building(cmd.owner, cmd.building_id)
+            if b is None or not b.queue:
+                return
+            # Cancel from the back, so the one already part-built keeps its
+            # progress. Refund in full -- partial refunds punish a misclick
+            # twice, once in resources and once in the time already spent.
+            self.players[b.owner].refund(UNIT_SPECS[b.queue.pop()].cost)
+            if not b.queue:
+                b.train_timer = 0
             return
 
         if not self.in_bounds(cmd.target):
@@ -191,6 +315,7 @@ class World:
                 u.order = Order.MOVE
                 u.target = cmd.target
                 u.gather_timer = 0
+                u.gather_resource = None
                 u.path = self._route(u.tile, cmd.target) or []
                 if not u.path:
                     u.order = Order.IDLE
@@ -201,17 +326,82 @@ class World:
                 return
             kind = YIELDS[Terrain(self.terrain[ty, tx])]
             for u in self._owned(cmd):
-                if u.kind is not UnitKind.WORKER:
+                if not u.spec.can_gather:
                     continue
-                # A worker already hauling something else drops it rather than
+                # A villager already hauling something else drops it rather than
                 # mixing loads -- the simplest rule that stays predictable.
                 if u.carry_kind is not None and u.carry_kind is not kind:
                     u.carrying = 0
                     u.carry_kind = None
                 u.order = Order.GATHER
                 u.target = cmd.target
+                u.gather_resource = kind
                 u.gather_timer = 0
                 u.path = []
+
+    def _apply_train(self, cmd: Train) -> None:
+        """Queue a unit, charging for it up front.
+
+        Charging on queue rather than on completion is the AoE rule, and it is
+        the one that behaves: the player sees the cost the moment they commit,
+        and a long queue cannot be built for free and then paid for later at
+        prices the stockpile can no longer cover.
+        """
+        b = self._owned_building(cmd.owner, cmd.building_id)
+        if b is None:
+            return
+        try:
+            kind = UnitKind(cmd.unit_kind)
+        except ValueError:
+            return
+        if kind not in b.spec.trains:
+            return
+        if len(b.queue) >= MAX_QUEUE:
+            return
+
+        player = self.players[b.owner]
+        cost = UNIT_SPECS[kind].cost
+        if not player.can_afford(cost):
+            return
+        player.spend(cost)
+        b.queue.append(kind)
+
+    def can_train(self, owner: int, bid: int, kind: UnitKind) -> bool:
+        """Whether a Train command would be accepted. The UI asks this to grey
+        out a button, so it must stay in step with :meth:`_apply_train`."""
+        b = self._owned_building(owner, bid)
+        return (
+            b is not None
+            and kind in b.spec.trains
+            and len(b.queue) < MAX_QUEUE
+            and self.players[owner].can_afford(UNIT_SPECS[kind].cost)
+        )
+
+    def _update_building(self, b: Building, report: TickReport) -> None:
+        if not b.queue:
+            b.train_timer = 0
+            return
+
+        kind = b.queue[0]
+        b.train_timer += 1
+        if b.train_timer < UNIT_SPECS[kind].train_ticks:
+            return
+
+        tile = self.spawn_tile_for(b)
+        if tile is None:
+            # Ringed in by terrain or buildings. Hold the finished unit at the
+            # door rather than dropping it: the timer stays spent, so it pops
+            # out the moment a tile frees up.
+            return
+        self.add_unit(b.owner, kind, *tile)
+        b.queue.pop(0)
+        b.train_timer = 0
+        report.trained[b.owner] += 1
+
+    def spawn_tile_for(self, b: Building) -> Tile | None:
+        """Where a unit produced at ``b`` appears: just below it, or the
+        nearest open ground to that."""
+        return self.nearest_free_tile(b.x, b.y + b.h)
 
     def _route(self, start: Tile, goal: Tile) -> list[Tile] | None:
         """Path to ``goal``, or beside it when ``goal`` itself is impassable."""
@@ -238,8 +428,13 @@ class World:
         tx, ty = u.target
 
         if self.resources[ty, tx] <= 0:
-            u.order = Order.RETURN if u.carrying else Order.IDLE
             u.path = []
+            if u.carrying:
+                # Deliver what we have first; the next tile is chosen after
+                # unloading, from wherever the drop-off leaves us.
+                u.order = Order.RETURN
+            elif not self._retarget_gatherer(u):
+                self._stop_gathering(u)
             return
 
         if _chebyshev(u.tile, u.target) <= 1:
@@ -255,7 +450,7 @@ class World:
                     self.terrain[ty, tx] = Terrain.GRASS
                     self._blocked = None
                 if (
-                    u.carrying >= self.cfg.worker_carry_capacity
+                    u.carrying >= self.cfg.villager_carry_capacity
                     or self.resources[ty, tx] <= 0
                 ):
                     u.order = Order.RETURN
@@ -265,7 +460,12 @@ class World:
         if not u.path:
             path = self._route(u.tile, u.target)
             if not path:
-                u.order = Order.RETURN if u.carrying else Order.IDLE
+                # Walled off. Another patch of the same resource may still be
+                # reachable, so try that before giving up.
+                if u.carrying:
+                    u.order = Order.RETURN
+                elif not self._retarget_gatherer(u):
+                    self._stop_gathering(u)
                 return
             u.path = path
         self._advance(u)
@@ -282,12 +482,12 @@ class World:
                 report.gathered[u.owner] += u.carrying
             u.carrying = 0
             u.path = []
-            # Head straight back if the tile still has anything left.
+            # Head straight back if the tile still has anything left,
+            # otherwise move on to the nearest patch of the same resource.
             if u.target is not None and self.resources[u.target[1], u.target[0]] > 0:
                 u.order = Order.GATHER
-            else:
-                u.order = Order.IDLE
-                u.carry_kind = None
+            elif not self._retarget_gatherer(u):
+                self._stop_gathering(u)
             return
 
         if not u.path:
@@ -298,13 +498,82 @@ class World:
             u.path = path
         self._advance(u)
 
+    def nearest_resource_tile(self, origin: Tile, resource: Resource,
+                              max_radius: int | None = None) -> Tile | None:
+        """Closest tile still holding ``resource`` that ``origin`` can reach.
+
+        Reachability is checked rather than assumed: the nearest bush as the
+        crow flies may be across a lake, and returning it would send a villager
+        idle the moment it failed to path. Candidates are ordered nearest
+        first with ties broken by position, so the choice is identical on every
+        run -- two villagers freed by the same bush pick the same next one.
+        """
+        terrains = TERRAIN_FOR_RESOURCE.get(Resource(resource), ())
+        if not terrains:
+            return None
+
+        # Slice to the search box before scanning. A Chebyshev radius *is* a
+        # square, so the crop applies the distance limit exactly -- no separate
+        # filter needed -- and keeps the scan off the rest of the map.
+        radius = self.cfg.regather_radius if max_radius is None else max_radius
+        if radius:
+            x0 = max(0, origin[0] - radius)
+            y0 = max(0, origin[1] - radius)
+            x1 = min(self.width, origin[0] + radius + 1)
+            y1 = min(self.height, origin[1] + radius + 1)
+        else:
+            x0, y0, x1, y1 = 0, 0, self.width, self.height
+
+        sub_terrain = self.terrain[y0:y1, x0:x1]
+        mask = self.resources[y0:y1, x0:x1] > 0
+        if len(terrains) == 1:
+            # The common case by far, and much quicker than np.isin here.
+            mask &= sub_terrain == terrains[0]
+        else:
+            mask &= np.isin(sub_terrain, terrains)
+
+        ys, xs = np.nonzero(mask)
+        if not len(xs):
+            return None
+        xs = xs + x0
+        ys = ys + y0
+
+        # Chebyshev, to match how units actually move (8-directional).
+        dist = np.maximum(np.abs(xs - origin[0]), np.abs(ys - origin[1]))
+
+        for i in np.lexsort((xs, ys, dist))[:RETARGET_CANDIDATES]:
+            tile = (int(xs[i]), int(ys[i]))
+            if path_to_adjacent(self.blocked, origin, tile) is not None:
+                return tile
+        return None
+
+    def _retarget_gatherer(self, u: Unit) -> bool:
+        """Send ``u`` to the nearest remaining tile of whatever it was
+        collecting. False if there is nothing left within reach."""
+        if u.gather_resource is None:
+            return False
+        tile = self.nearest_resource_tile(u.tile, u.gather_resource)
+        if tile is None:
+            return False
+        u.order = Order.GATHER
+        u.target = tile
+        u.path = []
+        u.gather_timer = 0
+        return True
+
+    def _stop_gathering(self, u: Unit) -> None:
+        u.order = Order.IDLE
+        u.path = []
+        u.gather_resource = None
+        u.carry_kind = None
+
     def _nearest_dropoff(self, u: Unit) -> Building | None:
         best, best_d = None, float("inf")
         for bid in sorted(self.buildings):
             b = self.buildings[bid]
             if b.owner != u.owner or not b.is_dropoff:
                 continue
-            cx, cy = b.centre
+            cx, cy = b.center
             d = (cx - u.x) ** 2 + (cy - u.y) ** 2
             if d < best_d:
                 best, best_d = b, d
@@ -312,7 +581,7 @@ class World:
 
     def _advance(self, u: Unit) -> None:
         """Walk ``u`` along its path by one tick's worth of movement."""
-        budget = self.cfg.worker_speed
+        budget = self.cfg.villager_speed
         while budget > 0 and u.path:
             wx, wy = u.path[0]
             tx, ty = wx + 0.5, wy + 0.5
@@ -344,11 +613,15 @@ class World:
             u = self.units[uid]
             hasher.update(
                 f"{u.uid},{u.owner},{int(u.kind)},{u.x:.6f},{u.y:.6f},"
-                f"{int(u.order)},{u.carrying},{u.gather_timer},{u.target}".encode()
+                f"{int(u.order)},{u.carrying},{u.gather_timer},{u.target},"
+                f"{u.gather_resource}".encode()
             )
         for bid in sorted(self.buildings):
             b = self.buildings[bid]
-            hasher.update(f"{b.bid},{b.owner},{b.x},{b.y},{b.hp}".encode())
+            hasher.update(
+                f"{b.bid},{b.owner},{b.x},{b.y},{b.hp},"
+                f"{[int(k) for k in b.queue]},{b.train_timer}".encode()
+            )
         for p in self.players:
             hasher.update(str(p.resources).encode())
         return hasher.hexdigest()

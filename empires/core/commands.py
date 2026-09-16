@@ -37,4 +37,19 @@ class Stop:
     unit_ids: tuple[int, ...]
 
 
-Command = Move | Gather | Stop
+@dataclass(frozen=True)
+class Train:
+    """Queue a unit at a building. Cost is charged when it joins the queue."""
+    owner: int
+    building_id: int
+    unit_kind: int
+
+
+@dataclass(frozen=True)
+class CancelTrain:
+    """Drop the last queued unit at a building and refund it."""
+    owner: int
+    building_id: int
+
+
+Command = Move | Gather | Stop | Train | CancelTrain

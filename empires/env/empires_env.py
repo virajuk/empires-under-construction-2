@@ -120,7 +120,7 @@ class EmpiresEnv(_Base):  # type: ignore[misc,valid-type]
                 reward -= self.idle_penalty * idle / len(own)
 
         truncated = world.tick >= self.sim_cfg.max_ticks
-        terminated = not world.units_of(self.player)  # lost every worker
+        terminated = not world.units_of(self.player)  # lost every villager
 
         info = {
             "tick": world.tick,
@@ -194,7 +194,7 @@ class EmpiresEnv(_Base):  # type: ignore[misc,valid-type]
                 self.world.width, self.world.height, cfg.tile_size,
                 surface.get_width(), surface.get_height(),
             )
-            self._renderer = (surface, Renderer(surface, camera))
+            self._renderer = (surface, Renderer(surface, camera, cfg))
 
         surface, renderer = self._renderer
         renderer.draw(self.world, set(), self.player)
@@ -205,10 +205,10 @@ class EmpiresEnv(_Base):  # type: ignore[misc,valid-type]
 # Where to go next with the action space
 #
 # One unit per step is fine for a first agent but it scales badly: with 50
-# workers the policy spends 50 decisions issuing one round of orders. The usual
+# villagers the policy spends 50 decisions issuing one round of orders. The usual
 # progressions, roughly in order of effort:
 #
-#   1. Auto-assign: add a single ACTION_TYPE "send all idle workers to the
+#   1. Auto-assign: add a single ACTION_TYPE "send all idle villagers to the
 #      nearest <resource>". Collapses the economy to a handful of decisions and
 #      is often enough to get a first learning curve.
 #   2. Spatial action head: predict a (x, y) heatmap plus a unit-selection

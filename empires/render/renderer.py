@@ -1,16 +1,19 @@
 """Drawing. Reads the world, writes pixels, mutates nothing.
 
-Everything is flat colour rects -- no art assets, so the project runs the
-moment it is cloned. When you swap in sprites, only this file changes.
+Sprites come from ``empires/graphics`` via :mod:`empires.render.assets`. Every
+sprite lookup can return ``None`` and each one has a flat-colour fallback, so
+the game still runs with the art directory missing or incomplete.
 """
 
 from __future__ import annotations
 
 import pygame
 
-from ..core.entities import Order, Unit
+from ..config import RenderConfig
+from ..core.entities import UNIT_SPECS, BuildingKind, Order, Unit
 from ..core.terrain import Terrain
 from ..core.world import World
+from .assets import Assets
 from .camera import Camera
 
 TERRAIN_COLOURS: dict[int, tuple[int, int, int]] = {
@@ -33,39 +36,90 @@ GRID_COLOUR = (0, 0, 0, 28)
 SELECT_COLOUR = (250, 250, 210)
 PATH_COLOUR = (240, 240, 200)
 
+# Terrain drawn as bare ground with a sprite on top, not as a flat colour.
+DECOR_TERRAIN = (Terrain.FOREST, Terrain.BERRY)
+
+# Decor is taller than its tile and stands on the tile's bottom edge, so
+# sprites belonging to tiles just outside the viewport still reach into it.
+DECOR_MARGIN_TILES = 3
+
+
+def unit_radius(tile_size: int) -> int:
+    """Radius a unit is drawn at, in pixels.
+
+    Selection hit-testing imports this too, so what you can click is exactly
+    what you can see. When the two were computed separately, clicking a moving
+    unit's visible circle could miss it entirely.
+    """
+    return max(3, tile_size // 3)
+
 
 class Renderer:
-    def __init__(self, surface: pygame.Surface, camera: Camera) -> None:
+    def __init__(self, surface: pygame.Surface, camera: Camera,
+                 cfg: RenderConfig | None = None) -> None:
         self.surface = surface
         self.camera = camera
+        self.cfg = cfg or RenderConfig()
         ts = camera.tile_size
+        self.assets = Assets(
+            ts, self.cfg.tree_scale, self.cfg.bush_scale,
+            enabled=self.cfg.use_sprites,
+        )
+
         # One pre-filled surface per terrain type, blitted rather than
         # re-filled. Cheap, and it gives a place to hang textures later.
-        self._tiles: dict[int, pygame.Surface] = {}
-        for terrain, colour in TERRAIN_COLOURS.items():
-            surf = pygame.Surface((ts, ts))
-            if terrain is Terrain.BERRY:
-                # A solid red square reads as something alarming. Draw bushes
-                # sitting on grass instead, so the tile still says "food".
-                surf.fill(TERRAIN_COLOURS[Terrain.GRASS])
-                bush = _shade(colour, 0.55)
-                for bx, by in ((0.32, 0.36), (0.66, 0.34), (0.5, 0.68)):
-                    pygame.draw.circle(surf, bush, (int(bx * ts), int(by * ts)),
-                                       max(2, ts // 5))
-                for bx, by in ((0.32, 0.36), (0.66, 0.34), (0.5, 0.68)):
-                    pygame.draw.circle(surf, colour, (int(bx * ts), int(by * ts)),
-                                       max(1, ts // 9))
-            else:
-                surf.fill(colour)
-            pygame.draw.line(surf, _shade(colour, 0.9), (0, ts - 1), (ts - 1, ts - 1))
-            pygame.draw.line(surf, _shade(colour, 0.9), (ts - 1, 0), (ts - 1, ts - 1))
-            self._tiles[int(terrain)] = surf
+        self._tiles: dict[int, pygame.Surface] = {
+            int(terrain): self._make_tile(terrain, colour, ts)
+            for terrain, colour in TERRAIN_COLOURS.items()
+        }
+
+    # ---------------------------------------------------------------- setup
+
+    def _has_decor_for(self, terrain: Terrain) -> bool:
+        if terrain is Terrain.FOREST:
+            return self.assets.has_trees
+        if terrain is Terrain.BERRY:
+            return self.assets.has_bushes
+        return False
+
+    def _make_tile(self, terrain: Terrain, colour: tuple[int, int, int],
+                   ts: int) -> pygame.Surface:
+        surf = pygame.Surface((ts, ts))
+        if terrain in DECOR_TERRAIN and self._has_decor_for(terrain):
+            # A sprite is drawn over this tile, so the ground beneath it is
+            # plain grass -- otherwise the tile colour rings the artwork.
+            colour = TERRAIN_COLOURS[Terrain.GRASS]
+            surf.fill(colour)
+        elif terrain is Terrain.BERRY:
+            # No art: a solid red square reads as something alarming, so draw
+            # bushes sitting on grass.
+            surf.fill(TERRAIN_COLOURS[Terrain.GRASS])
+            bush = _shade(colour, 0.55)
+            for bx, by in ((0.32, 0.36), (0.66, 0.34), (0.5, 0.68)):
+                pygame.draw.circle(surf, bush, (int(bx * ts), int(by * ts)),
+                                   max(2, ts // 5))
+            for bx, by in ((0.32, 0.36), (0.66, 0.34), (0.5, 0.68)):
+                pygame.draw.circle(surf, colour, (int(bx * ts), int(by * ts)),
+                                   max(1, ts // 9))
+            colour = TERRAIN_COLOURS[Terrain.GRASS]
+        else:
+            surf.fill(colour)
+        pygame.draw.line(surf, _shade(colour, 0.9), (0, ts - 1), (ts - 1, ts - 1))
+        pygame.draw.line(surf, _shade(colour, 0.9), (ts - 1, 0), (ts - 1, ts - 1))
+        return surf
+
+    # ----------------------------------------------------------------- draw
 
     def draw(self, world: World, selected: set[int], player: int,
-             drag_rect: pygame.Rect | None = None) -> None:
+             drag_rect: pygame.Rect | None = None,
+             selected_building: int | None = None) -> None:
         self.surface.fill((20, 24, 20))
         self._draw_terrain(world)
-        self._draw_buildings(world)
+        # Decor is a second pass, not part of the terrain loop: a tree is
+        # taller than its tile, so drawing it inline would let the next row of
+        # ground paint over its trunk.
+        self._draw_decor(world)
+        self._draw_buildings(world, selected_building)
         self._draw_paths(world, selected)
         self._draw_units(world, selected)
         if drag_rect is not None:
@@ -86,17 +140,103 @@ class Renderer:
             for tx in range(x0, x1):
                 blit(self._tiles[int(row[tx])], (int(tx * ts - cam.x), sy))
 
-    def _draw_buildings(self, world: World) -> None:
+    def _draw_decor(self, world: World) -> None:
+        if not (self.assets.has_trees or self.assets.has_bushes):
+            return
         cam = self.camera
         ts = cam.tile_size
+        x0, y0, x1, y1 = cam.visible_tiles
+        m = DECOR_MARGIN_TILES
+        x0, y0 = max(0, x0 - m), max(0, y0 - m)
+        x1, y1 = min(world.width, x1 + m), min(world.height, y1 + m)
+
+        seed = world.seed
+        blit = self.surface.blit
+        # Top row first, so a nearer tree overlaps the one behind it.
+        for ty in range(y0, y1):
+            row = world.terrain[ty]
+            base_y = int(ty * ts - cam.y) + ts
+            for tx in range(x0, x1):
+                terrain = row[tx]
+                if terrain == Terrain.FOREST:
+                    sprite = self.assets.tree(tx, ty, seed)
+                elif terrain == Terrain.BERRY:
+                    sprite = self.assets.bush(tx, ty, seed)
+                else:
+                    continue
+                if sprite is None:
+                    continue
+                # Centred on the tile, standing on its bottom edge.
+                sx = int(tx * ts - cam.x) + (ts - sprite.get_width()) // 2
+                blit(sprite, (sx, base_y - sprite.get_height()))
+
+    def _draw_buildings(self, world: World,
+                        selected_building: int | None = None) -> None:
+        cam = self.camera
+        ts = cam.tile_size
+        view = self.surface.get_rect()
         for b in world.buildings.values():
             sx, sy = cam.world_to_screen(b.x, b.y)
-            rect = pygame.Rect(sx, sy, b.w * ts, b.h * ts)
-            if not rect.colliderect(self.surface.get_rect()):
+            footprint = pygame.Rect(sx, sy, b.w * ts, b.h * ts)
+            if not footprint.colliderect(view):
                 continue
             colour = PLAYER_COLOURS[b.owner % len(PLAYER_COLOURS)]
-            pygame.draw.rect(self.surface, _shade(colour, 0.55), rect)
-            pygame.draw.rect(self.surface, colour, rect, width=3)
+
+            sprite = None
+            if b.kind is BuildingKind.TOWN_CENTER:
+                # Drawn larger than the plot it occupies and standing on its
+                # bottom edge, so it reads as a building on the ground rather
+                # than a flat tile the size of its footprint.
+                sprite = self.assets.town_center(
+                    int(footprint.width * self.cfg.building_scale),
+                    int(footprint.height * self.cfg.building_scale),
+                )
+
+            if sprite is None:
+                pygame.draw.rect(self.surface, _shade(colour, 0.55), footprint)
+                pygame.draw.rect(self.surface, colour, footprint, width=3)
+                # Overlays belong on both paths -- without this, selection and
+                # training progress disappear whenever the art is missing.
+                self._draw_building_overlays(b, footprint, b.bid == selected_building)
+                continue
+
+            self.surface.blit(sprite, (
+                footprint.centerx - sprite.get_width() // 2,
+                footprint.bottom - sprite.get_height(),
+            ))
+            # Ownership still has to be legible. An outline round the plot gets
+            # drawn straight across the building's face, so use a colour bar at
+            # its base instead -- visible, and it leaves the artwork alone.
+            bar_h = max(3, ts // 6)
+            bar = pygame.Rect(footprint.x, footprint.bottom - bar_h,
+                              footprint.width, bar_h)
+            pygame.draw.rect(self.surface, colour, bar, border_radius=2)
+            pygame.draw.rect(self.surface, _shade(colour, 0.5), bar, width=1,
+                             border_radius=2)
+            self._draw_building_overlays(b, footprint, b.bid == selected_building)
+
+    def _draw_building_overlays(self, b, footprint: pygame.Rect,
+                                is_selected: bool) -> None:
+        """Selection ring and training progress.
+
+        Both hug the *footprint*, not the artwork: the footprint is what you
+        click and what the unit walks out of, so highlighting anything else
+        would misreport where the building actually is.
+        """
+        if is_selected:
+            ring = footprint.inflate(6, 6)
+            pygame.draw.rect(self.surface, SELECT_COLOUR, ring, width=2,
+                             border_radius=3)
+
+        if not b.queue:
+            return
+        total = max(1, UNIT_SPECS[b.queue[0]].train_ticks)
+        frac = max(0.0, min(1.0, b.train_timer / total))
+        bar = pygame.Rect(footprint.x, footprint.top - 8, footprint.width, 5)
+        pygame.draw.rect(self.surface, (24, 26, 28), bar, border_radius=2)
+        pygame.draw.rect(self.surface, (120, 190, 120),
+                         (bar.x, bar.y, max(2, int(bar.width * frac)), bar.height),
+                         border_radius=2)
 
     def _draw_paths(self, world: World, selected: set[int]) -> None:
         cam = self.camera
@@ -116,7 +256,7 @@ class Renderer:
     def _draw_units(self, world: World, selected: set[int]) -> None:
         cam = self.camera
         ts = cam.tile_size
-        radius = max(3, ts // 3)
+        radius = unit_radius(ts)
         view = self.surface.get_rect()
         for uid in sorted(world.units):
             u = world.units[uid]

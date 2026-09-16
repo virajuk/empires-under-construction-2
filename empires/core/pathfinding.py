@@ -124,7 +124,7 @@ def path_to_adjacent(
 ) -> list[Tile] | None:
     """Path to the cheapest free tile *next to* ``goal``.
 
-    This is how a worker approaches a tree or a gold vein: the target itself is
+    This is how a villager approaches a tree or a gold vein: the target itself is
     impassable, so we route to the best neighbour of it.
     """
     h, w = blocked.shape

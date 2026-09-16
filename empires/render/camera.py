@@ -27,7 +27,7 @@ class Camera:
         self.y += dy
         self.clamp()
 
-    def centre_on_tile(self, tx: float, ty: float) -> None:
+    def center_on_tile(self, tx: float, ty: float) -> None:
         self.x = tx * self.tile_size - self.view_w / 2
         self.y = ty * self.tile_size - self.view_h / 2
         self.clamp()

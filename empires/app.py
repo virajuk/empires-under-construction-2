@@ -15,15 +15,18 @@ from __future__ import annotations
 import pygame
 
 from .config import RenderConfig, SimConfig
-from .core.commands import Command, Gather, Move, Stop
+from .core.commands import CancelTrain, Command, Gather, Move, Stop, Train
 from .core.entities import Order, UnitKind
 from .core.terrain import is_harvestable
 from .core.world import World
 from .render.camera import Camera
 from .render.hud import Hud
-from .render.renderer import Renderer
+from .render.renderer import Renderer, unit_radius
 
-DRAG_THRESHOLD = 6  # pixels; below this a drag counts as a click
+DRAG_THRESHOLD = 6      # pixels of travel below which a drag counts as a click
+PICK_MARGIN = 3         # forgiveness added to a unit's drawn radius when clicking
+SAME_SPOT_RADIUS = 8    # two clicks this close count as aimed at the same place
+DOUBLE_CLICK_MS = 400
 
 
 class App:
@@ -47,18 +50,27 @@ class App:
             self.world.width, self.world.height, self.cfg.tile_size,
             self.viewport.get_width(), self.viewport.get_height(),
         )
-        self.renderer = Renderer(self.viewport, self.camera)
+        self.renderer = Renderer(self.viewport, self.camera, self.cfg)
         self.hud = Hud(self.screen, self._panel_rect())
 
         self.selected: set[int] = set()
+        # Buildings select separately from units: an RTS never has both at
+        # once, and the panel shows completely different things for each.
+        self.selected_building: int | None = None
         self.pending: list[Command] = []
         self.paused = False
         self.speed_multiplier = 1
         self.running = True
         self._drag_start: tuple[int, int] | None = None
         self._accumulator = 0.0
+        # Click bookkeeping. Cycling through a stack and detecting a
+        # double-click both need to know where and when you last clicked.
+        self._last_click_ms = 0
+        self._last_click_pos: tuple[int, int] | None = None
+        self._last_pick_pos: tuple[int, int] | None = None
+        self._last_pick_uid: int | None = None
 
-        self._centre_on_home()
+        self._center_on_home()
 
     # ------------------------------------------------------------- layout
 
@@ -78,10 +90,10 @@ class App:
         self.hud.surface = self.screen
         self.hud.rect = self._panel_rect()
 
-    def _centre_on_home(self) -> None:
+    def _center_on_home(self) -> None:
         for b in self.world.buildings.values():
             if b.owner == self.player:
-                self.camera.centre_on_tile(*b.centre)
+                self.camera.center_on_tile(*b.center)
                 return
 
     # -------------------------------------------------------------- input
@@ -103,7 +115,7 @@ class App:
         if event.key == pygame.K_ESCAPE:
             self.running = False
         elif event.key == pygame.K_SPACE:
-            self._centre_on_home()
+            self._center_on_home()
         elif event.key == pygame.K_p:
             self.paused = not self.paused
         elif event.key == pygame.K_f:
@@ -113,13 +125,21 @@ class App:
         elif event.key == pygame.K_e:
             self.selected = {
                 u.uid for u in self.world.units_of(self.player)
-                if u.order is Order.IDLE and u.kind is UnitKind.WORKER
+                if u.order is Order.IDLE and u.spec.can_gather
             }
+        elif event.key == pygame.K_v:
+            self._queue_villager()
         elif event.key == pygame.K_x:
-            if self.selected:
+            if self.selected_building is not None:
+                self._cancel_training()
+            elif self.selected:
                 self.pending.append(Stop(self.player, tuple(sorted(self.selected))))
 
     def _on_mouse_down(self, event: pygame.event.Event) -> None:
+        if self.hud.rect.collidepoint(event.pos):
+            if event.button == 1:
+                self._on_panel_click(event.pos)
+            return
         if not self.viewport.get_rect().collidepoint(event.pos):
             return
         if event.button == 1:
@@ -142,13 +162,101 @@ class App:
                 abs(end[0] - start[0]), abs(end[1] - start[1]),
             ), additive)
 
-    def _select_click(self, pos: tuple[int, int], additive: bool) -> None:
+    def _units_under(self, pos: tuple[int, int]) -> list[int]:
+        """Your unit ids whose drawn circle covers ``pos``, nearest first.
+
+        Hit-testing against the *drawn* circle rather than the unit's tile is
+        what makes clicking a moving unit reliable: a unit part-way between
+        tiles is drawn overlapping its neighbour, and a tile lookup would miss
+        it. Ties break on uid so the order is stable between clicks, which is
+        what lets cycling below work.
+        """
+        r = unit_radius(self.camera.tile_size) + PICK_MARGIN
+        hits: list[tuple[int, int]] = []
+        for u in self.world.units_of(self.player):
+            sx, sy = self.camera.world_to_screen(u.x, u.y)
+            d2 = (sx - pos[0]) ** 2 + (sy - pos[1]) ** 2
+            if d2 <= r * r:
+                hits.append((d2, u.uid))
+        hits.sort()
+        return [uid for _, uid in hits]
+
+    def _building_under(self, pos: tuple[int, int]) -> int | None:
+        """Your building at ``pos``, if any.
+
+        Tile lookup rather than the pixel test used for units: a building fills
+        whole tiles, so its footprint *is* its clickable area -- and the art is
+        drawn taller than the plot, so hit-testing the sprite would let you
+        select it by clicking the ground several tiles above.
+        """
         tile = self.camera.screen_to_tile(*pos)
-        unit = self.world.unit_at(tile, owner=self.player)
-        if not additive:
-            self.selected.clear()
-        if unit is not None:
-            self.selected.add(unit.uid)
+        b = self.world.building_at(tile)
+        return b.bid if b is not None and b.owner == self.player else None
+
+    def _select_click(self, pos: tuple[int, int], additive: bool,
+                      now_ms: int | None = None) -> None:
+        now = pygame.time.get_ticks() if now_ms is None else now_ms
+        is_double = (
+            now - self._last_click_ms <= DOUBLE_CLICK_MS
+            and _near(pos, self._last_click_pos, SAME_SPOT_RADIUS)
+        )
+        self._last_click_ms = now
+        self._last_click_pos = pos
+
+        candidates = self._units_under(pos)
+        if not candidates:
+            # Units win ties: a villager standing at the door of its Town
+            # Center should be clickable without having to walk it away first.
+            bid = self._building_under(pos)
+            if bid is not None:
+                self.selected.clear()
+                self.selected_building = bid
+                self._last_pick_uid = None
+                return
+            if not additive:
+                self.selected.clear()
+            self._last_pick_uid = None
+            self.selected_building = None
+            return
+
+        self.selected_building = None
+
+        if is_double:
+            # Double-click grabs the whole type on screen, as an RTS player
+            # expects. Note this takes priority over cycling, so walking a
+            # stack means clicking at a normal pace, not hammering.
+            self._select_kind_on_screen(self.world.units[candidates[0]].kind, additive)
+            self._last_pick_uid = None
+            self.selected_building = None
+            return
+
+        # Units do not collide, so several routinely sit on the same spot.
+        # Clicking the same place again advances to the next one instead of
+        # re-picking the one already selected.
+        uid = candidates[0]
+        if (self._last_pick_uid in candidates
+                and _near(pos, self._last_pick_pos, SAME_SPOT_RADIUS)):
+            nxt = candidates.index(self._last_pick_uid) + 1
+            uid = candidates[nxt % len(candidates)]
+        self._last_pick_pos = pos
+        self._last_pick_uid = uid
+
+        if additive:
+            # Shift-click toggles, so you can drop one unit from a group.
+            self.selected ^= {uid}
+        else:
+            self.selected = {uid}
+
+    def _select_kind_on_screen(self, kind: UnitKind, additive: bool) -> None:
+        view = self.viewport.get_rect()
+        ids = set()
+        for u in self.world.units_of(self.player):
+            if u.kind is not kind:
+                continue
+            sx, sy = self.camera.world_to_screen(u.x, u.y)
+            if view.collidepoint(sx, sy):
+                ids.add(u.uid)
+        self.selected = (self.selected | ids) if additive else ids
 
     def _select_box(self, rect: pygame.Rect, additive: bool) -> None:
         if not additive:
@@ -157,6 +265,32 @@ class App:
             sx, sy = self.camera.world_to_screen(u.x, u.y)
             if rect.collidepoint(sx, sy):
                 self.selected.add(u.uid)
+        # A box replaces whatever the click cycle was walking through.
+        self._last_pick_uid = None
+        if self.selected:
+            self.selected_building = None
+
+    def _on_panel_click(self, pos: tuple[int, int]) -> None:
+        button = self.hud.train_button
+        if button is not None and button.collidepoint(pos):
+            self._queue_villager()
+
+    def _queue_villager(self) -> None:
+        """Queue a Villager at the selected building.
+
+        Like every other input this only appends a Command; the simulation
+        decides on the next tick whether it is affordable. The HUD greys the
+        button out, but that is a hint, not the rule -- the sim stays the single
+        authority on what is legal.
+        """
+        if self.selected_building is not None:
+            self.pending.append(
+                Train(self.player, self.selected_building, UnitKind.VILLAGER)
+            )
+
+    def _cancel_training(self) -> None:
+        if self.selected_building is not None:
+            self.pending.append(CancelTrain(self.player, self.selected_building))
 
     def _issue_order(self, pos: tuple[int, int]) -> None:
         """Right-click: gather if the tile holds a resource, otherwise move.
@@ -223,8 +357,10 @@ class App:
                         self.world.step(self.pending)
                         self.pending = []
                         self._accumulator -= sim_dt
-                        # Drop selections for units that no longer exist.
+                        # Drop selections for things that no longer exist.
                         self.selected &= self.world.units.keys()
+                        if self.selected_building not in self.world.buildings:
+                            self.selected_building = None
 
                 drag_rect = None
                 if self._drag_start is not None:
@@ -234,9 +370,15 @@ class App:
                         abs(end[0] - self._drag_start[0]), abs(end[1] - self._drag_start[1]),
                     )
 
-                self.renderer.draw(self.world, self.selected, self.player, drag_rect)
+                self.renderer.draw(self.world, self.selected, self.player,
+                                   drag_rect, self.selected_building)
                 self.hud.draw(self.world, self.camera, self.selected,
-                              self.player, self.clock.get_fps())
+                              self.player, self.clock.get_fps(),
+                              self.selected_building)
                 pygame.display.flip()
         finally:
             pygame.quit()
+
+
+def _near(a: tuple[int, int], b: tuple[int, int] | None, radius: int) -> bool:
+    return b is not None and abs(a[0] - b[0]) <= radius and abs(a[1] - b[1]) <= radius

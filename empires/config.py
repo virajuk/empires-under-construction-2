@@ -30,10 +30,14 @@ class SimConfig:
     ticks_per_second: int = 20
 
     # --- units ---
-    start_workers: int = 4
-    worker_speed: float = 0.12       # tiles per tick
-    worker_carry_capacity: int = 10
-    gather_ticks_per_unit: int = 4   # ticks to harvest 1 resource point
+    start_villagers: int = 4
+    villager_speed: float = 0.12       # tiles per tick
+    villager_carry_capacity: int = 10
+    gather_ticks_per_unit: int = 4     # ticks to harvest 1 resource point
+    # How far a villager will look for more of the same resource when its tile
+    # runs out. Bounded so it moves to the next bush rather than silently
+    # trekking across the map; past this it goes idle and waits for orders.
+    regather_radius: int = 24
 
     # --- resources ---
     forest_amount: int = 100
@@ -59,3 +63,16 @@ class RenderConfig:
     fps: int = 60
     camera_speed: float = 700.0      # pixels per second
     edge_scroll_margin: int = 0      # set >0 to enable edge scrolling
+
+    # --- sprites ---
+    # Set use_sprites False to fall back to flat colour tiles everywhere, which
+    # is also what happens automatically when empires/graphics is missing.
+    use_sprites: bool = True
+    # Multiples of a tile, applied to the *visible* artwork: sprites are
+    # trimmed of transparent margin before scaling, so these are directly
+    # comparable to each other and stay meaningful when new art is dropped in.
+    # Above 1.0 a sprite overlaps its neighbours, which is what makes a patch
+    # of forest read as a canopy rather than a checkerboard.
+    tree_scale: float = 1.6
+    bush_scale: float = 1.4
+    building_scale: float = 2.0

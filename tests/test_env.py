@@ -110,7 +110,7 @@ def test_gathering_earns_reward():
         total += r
         if terminated or truncated:
             break
-    assert total > 0, "a worker sent to a tree should deposit something"
+    assert total > 0, "a villager sent to a tree should deposit something"
     assert sum(info["resources"]) > 0
     e.close()
 

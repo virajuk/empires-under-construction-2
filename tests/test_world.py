@@ -4,7 +4,7 @@ import pytest
 from empires.config import SimConfig
 from empires.core.commands import Gather, Move, Stop
 from empires.core.entities import Order
-from empires.core.terrain import Resource, Terrain
+from empires.core.terrain import TERRAIN_FOR_RESOURCE, Resource, Terrain
 from empires.core.world import World
 
 
@@ -67,10 +67,21 @@ def test_full_gather_cycle_deposits_resources(world):
     assert world.players[0].resources[Resource.WOOD] > 0
 
 
+def strip_all_but(world: World, resource: Resource, keep: tuple[int, int],
+                  amount: int) -> None:
+    """Leave exactly one tile of ``resource`` on the map, holding ``amount``.
+
+    Villagers move on to the next patch when one runs dry, so a test about a
+    single tile has to remove the alternatives or it measures the whole map.
+    """
+    world.resources[np.isin(world.terrain, TERRAIN_FOR_RESOURCE[resource])] = 0
+    world.resources[keep[1], keep[0]] = amount
+
+
 def test_exhausted_tile_becomes_walkable(world):
     target = nearest_forest(world, 0)
     tx, ty = target
-    world.resources[ty, tx] = 3
+    strip_all_but(world, Resource.WOOD, target, 3)
     ids = tuple(sorted(u.uid for u in world.units_of(0)))
     run(world, 600, [Gather(0, ids, target)])
     assert world.terrain[ty, tx] == Terrain.GRASS
@@ -86,15 +97,15 @@ def test_gather_on_empty_tile_is_ignored(world):
     assert unit.order is Order.IDLE
 
 
-def test_workers_do_not_exceed_carry_capacity():
-    cfg = SimConfig(worker_carry_capacity=5, gather_ticks_per_unit=1)
+def test_villagers_do_not_exceed_carry_capacity():
+    cfg = SimConfig(villager_carry_capacity=5, gather_ticks_per_unit=1)
     w = World(cfg, seed=3)
     target = nearest_forest(w, 0)
     ids = tuple(sorted(u.uid for u in w.units_of(0)))
     w.step([Gather(0, ids, target)])
     for _ in range(500):
         w.step()
-        assert all(u.carrying <= cfg.worker_carry_capacity for u in w.units.values())
+        assert all(u.carrying <= cfg.villager_carry_capacity for u in w.units.values())
 
 
 # ----------------------------------------------------------------- commands
@@ -149,7 +160,7 @@ def test_unknown_unit_id_is_ignored(world):
 
 
 def test_starting_state():
-    cfg = SimConfig(num_players=2, start_workers=4)
+    cfg = SimConfig(num_players=2, start_villagers=4)
     w = World(cfg, seed=0)
     assert len(w.units) == 8
     assert len(w.buildings) == 2
@@ -198,8 +209,169 @@ def test_food_and_gold_are_separate_stockpiles():
 def test_depleted_bush_becomes_walkable(world):
     target = nearest_berry(world, 0)
     tx, ty = target
-    world.resources[ty, tx] = 2
+    strip_all_but(world, Resource.FOOD, target, 2)
     ids = tuple(sorted(u.uid for u in world.units_of(0)))
     run(world, 600, [Gather(0, ids, target)])
     assert world.terrain[ty, tx] == Terrain.GRASS
     assert world.players[0].resources[Resource.FOOD] == 2
+
+
+def test_villagers_go_idle_when_nothing_of_that_resource_remains(world):
+    """The other half of retargeting: stop looking once the map is picked clean."""
+    target = nearest_berry(world, 0)
+    strip_all_but(world, Resource.FOOD, target, 2)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    run(world, 600, [Gather(0, ids, target)])
+    assert all(u.order is Order.IDLE for u in world.units_of(0))
+    assert all(u.gather_resource is None for u in world.units_of(0))
+
+
+# ------------------------------------------------------- villager activity
+
+
+def test_activity_categories_are_exhaustive(world):
+    """harvesting + walking + idle must always equal total.
+
+    Regression: the HUD once counted "gathering" and "idle" and treated
+    everything else as nothing, so a Villager under a move order vanished from
+    the readout entirely.
+    """
+    from empires.core.entities import Order
+
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids[:2], target)])
+    world.step([Move(0, ids[2:], world.nearest_free_tile(30, 20))])
+
+    seen_orders = set()
+    seen_states = set()
+    for _ in range(400):
+        world.step()
+        act = world.villager_activity(0)
+        assert act.harvesting + act.walking + act.idle == act.total
+        seen_orders.update(u.order for u in world.units_of(0))
+        seen_states.update(
+            k for k, v in (("harvesting", act.harvesting),
+                           ("walking", act.walking),
+                           ("idle", act.idle)) if v
+        )
+
+    # The run has to actually exercise the interesting states, or the
+    # invariant above is trivially satisfied.
+    assert {Order.GATHER, Order.MOVE, Order.IDLE} <= seen_orders
+    assert seen_states == {"harvesting", "walking", "idle"}
+
+
+def test_walking_counts_villagers_on_their_way_to_a_resource(world):
+    """Regression: a Villager crossing the map to reach a bush was classified
+    by its *order* (GATHER), so the HUD reported nobody moving while four of
+    them were plainly walking."""
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids, target)])
+    world.step()
+
+    act = world.villager_activity(0)
+    assert act.gathering == len(ids), "all four are assigned to the resource"
+    assert act.walking > 0, "and they are walking there, not standing still"
+
+    # And they really do cross the map: over a short window at least as many
+    # villagers change position as were counted walking.
+    before = {u.uid: (u.x, u.y) for u in world.units_of(0)}
+    for _ in range(10):
+        world.step()
+    moved = sum(1 for u in world.units_of(0) if (u.x, u.y) != before[u.uid])
+    assert moved >= act.walking
+
+
+def test_walking_is_exactly_the_villagers_with_a_path(world):
+    """Pins the definition: walking == "has somewhere left to walk".
+
+    Deliberately not asserted against frame-by-frame motion -- a villager
+    arriving in range stops with waypoints still queued, and one that has just
+    filled its load is routed home only on the following tick. Both are
+    one-tick transitions; see VillagerActivity.
+    """
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids, target)])
+
+    for _ in range(600):
+        world.step()
+        act = world.villager_activity(0)
+        assert act.walking == sum(1 for u in world.units_of(0) if u.path)
+
+
+def test_harvesting_counts_only_villagers_that_have_arrived(world):
+    from empires.core.entities import Order
+
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids, target)])
+    for _ in range(600):
+        world.step()
+        act = world.villager_activity(0)
+        arrived = sum(
+            1 for u in world.units_of(0)
+            if u.order in (Order.GATHER, Order.RETURN) and not u.path
+        )
+        assert act.harvesting == arrived
+
+
+def test_activity_counts_only_villagers(world):
+    """A Soldier standing still is not an idle Villager."""
+    from empires.core.entities import UnitKind
+
+    before = world.villager_activity(0)
+    world.add_unit(0, UnitKind.SOLDIER, *world.nearest_free_tile(25, 20))
+    after = world.villager_activity(0)
+    assert after == before
+
+
+def test_activity_is_per_player(world):
+    a = world.villager_activity(0)
+    b = world.villager_activity(1)
+    assert a.total == b.total == world.cfg.start_villagers
+
+
+def test_activity_tracks_a_move_order(world):
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    assert world.villager_activity(0).idle == world.cfg.start_villagers
+
+    world.step([Move(0, ids, world.nearest_free_tile(30, 20))])
+    act = world.villager_activity(0)
+    assert act.walking == len(ids)
+    assert act.idle == 0
+    assert act.harvesting == 0
+    assert act.gathering == 0, "a plain move is not resource work"
+
+
+def test_activity_counts_hauling_as_gathering(world):
+    """A Villager walking a load home is working, not idle."""
+    from empires.core.entities import Order
+
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids, target)])
+    for _ in range(600):
+        world.step()
+        if any(u.order is Order.RETURN for u in world.units_of(0)):
+            break
+    else:
+        pytest.fail("no villager ever started hauling a load back")
+
+    act = world.villager_activity(0)
+    returning = sum(1 for u in world.units_of(0) if u.order is Order.RETURN)
+    assert returning > 0
+    assert act.gathering >= returning
+    assert act.harvesting + act.walking + act.idle == act.total
+
+
+def test_activity_carrying_matches_units(world):
+    target = nearest_berry(world, 0)
+    ids = tuple(sorted(u.uid for u in world.units_of(0)))
+    world.step([Gather(0, ids, target)])
+    for _ in range(300):
+        world.step()
+        expected = sum(u.carrying for u in world.units_of(0) if u.spec.can_gather)
+        assert world.villager_activity(0).carrying == expected

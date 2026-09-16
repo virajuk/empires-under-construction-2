@@ -58,7 +58,7 @@ def encode_grid(world: World, player: int, out: np.ndarray | None = None) -> np.
             out[_OWN_UNITS, ty, tx] += 1.0 / _MAX_UNITS_PER_TILE
             if u.carrying:
                 out[_OWN_CARRYING, ty, tx] = u.carrying / max(
-                    1, world.cfg.worker_carry_capacity
+                    1, world.cfg.villager_carry_capacity
                 )
             if u.order is Order.IDLE:
                 out[_OWN_IDLE, ty, tx] += 1.0 / _MAX_UNITS_PER_TILE
@@ -74,14 +74,19 @@ def encode_grid(world: World, player: int, out: np.ndarray | None = None) -> np.
 
 
 def encode_scalars(world: World, player: int) -> np.ndarray:
-    """Global state a convolution cannot see: stockpile, clock, idle workers."""
-    own = world.units_of(player)
-    idle = sum(1 for u in own if u.order is Order.IDLE)
+    """Global state a convolution cannot see: stockpile, clock, idle villagers.
+
+    The idle fraction comes from ``World.villager_activity`` -- the same call
+    the HUD uses -- so what the policy is told and what a person sees on screen
+    cannot drift apart. It counts Villagers only: a Soldier standing still is
+    not idle economy.
+    """
+    act = world.villager_activity(player)
     return np.array(
         [
             *(min(r / _MAX_STOCKPILE, 1.0) for r in world.players[player].resources),
             world.tick / max(1, world.cfg.max_ticks),
-            idle / max(1, len(own)),
+            act.idle / max(1, act.total),
         ],
         dtype=np.float32,
     )

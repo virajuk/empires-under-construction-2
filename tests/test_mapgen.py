@@ -11,7 +11,7 @@ from empires.core.world import World
 @pytest.mark.parametrize("seed", range(20))
 def test_no_unit_ever_spawns_inside_terrain(seed):
     """Regression: resource patches used to be stamped over the start plaza,
-    burying workers in rock and leaving them permanently unable to path."""
+    burying villagers in rock and leaving them permanently unable to path."""
     w = World(SimConfig(), seed=seed)
     for u in w.units.values():
         tx, ty = u.tile
@@ -19,11 +19,11 @@ def test_no_unit_ever_spawns_inside_terrain(seed):
 
 
 @pytest.mark.parametrize("seed", range(20))
-def test_every_worker_can_reach_its_own_town_centre(seed):
+def test_every_villager_can_reach_its_own_town_center(seed):
     w = World(SimConfig(), seed=seed)
     for u in w.units.values():
         tc = next(b for b in w.buildings.values() if b.owner == u.owner)
-        target = w.nearest_free_tile(int(tc.centre[0]), int(tc.centre[1]))
+        target = w.nearest_free_tile(int(tc.center[0]), int(tc.center[1]))
         assert target is not None
         assert find_path(w.blocked, u.tile, target) is not None, (
             f"seed {seed}: unit {u.uid} is walled off from its own base"
@@ -103,5 +103,5 @@ def test_berry_clusters_are_clusters_not_single_tiles():
         )
     )
     # Anchored clumps, not tiles smeared around a ring: essentially every bush
-    # should have a neighbour, so a patch fits several workers at once.
+    # should have a neighbour, so a patch fits several villagers at once.
     assert touching >= len(xs) * 0.9

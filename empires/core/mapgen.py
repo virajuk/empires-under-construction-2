@@ -38,7 +38,7 @@ def generate(cfg: SimConfig, seed: int) -> tuple[np.ndarray, np.ndarray, list[Ti
 
     ``terrain`` is ``(H, W)`` uint8 of :class:`Terrain`, ``resources`` is
     ``(H, W)`` int32 of remaining harvestable amount, and ``start_tiles`` is one
-    town-centre top-left tile per player.
+    Town Center top-left tile per player.
     """
     width, height = cfg.map_width, cfg.map_height
     rng = np.random.default_rng(seed)
@@ -129,7 +129,7 @@ def _place_cluster(rng: np.random.Generator, terrain: np.ndarray, resources: np.
     the ring ``[min_dist, max_dist]``, then scatter the tiles within ``spread``
     of *that anchor*. Choosing each tile independently from the ring instead
     smears them around its whole circumference, which gives isolated bushes
-    rather than a patch you can put four workers on.
+    rather than a patch you can put four villagers on.
 
     Unlike :func:`_place_patch` this needs no solid rectangle of free ground, so
     it still succeeds on a cluttered map -- which matters for berries, since a
@@ -179,7 +179,7 @@ def _unseal(terrain: np.ndarray, resources: np.ndarray, kind: Terrain) -> int:
     later cluster -- or a gold patch dropped next to an earlier one -- can wall
     in a tile whose own repair pass has already finished.
 
-    A worker cannot stand next to a sealed bush, so leaving one in place gives
+    A villager cannot stand next to a sealed bush, so leaving one in place gives
     the player a resource they can see, click, and never harvest. Reverting a
     tile frees space for its neighbours, so this repeats until it settles.
 
@@ -204,8 +204,8 @@ def _unseal(terrain: np.ndarray, resources: np.ndarray, kind: Terrain) -> int:
 def _open_neighbours(terrain: np.ndarray, x: int, y: int) -> int:
     """Count walkable tiles around ``(x, y)``, excluding ``(x, y)`` itself.
 
-    Called both before a tile is placed (centre still grass) and after (centre
-    is a resource), so the centre has to be discounted conditionally rather
+    Called both before a tile is placed (center still grass) and after (center
+    is a resource), so the center has to be discounted conditionally rather
     than with a blanket ``- 1`` -- otherwise a fully sealed tile scores ``-1``
     and slips past an ``== 0`` check.
     """

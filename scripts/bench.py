@@ -28,7 +28,7 @@ def run_bench(cfg: SimConfig | None = None, seed: int = 0, ticks: int = 20_000) 
     cfg = cfg or SimConfig()
     world = World(cfg, seed=seed)
 
-    # Put every worker to work first -- an idle sim is a meaningless benchmark.
+    # Put every villager to work first -- an idle sim is a meaningless benchmark.
     ys, xs = np.where(world.terrain == Terrain.FOREST)
     commands = []
     if len(xs):
@@ -43,7 +43,7 @@ def run_bench(cfg: SimConfig | None = None, seed: int = 0, ticks: int = 20_000) 
     world.step(commands)
     start = time.perf_counter()
     for i in range(ticks):
-        # Re-task idle workers periodically. A sim full of idle units is a
+        # Re-task idle villagers periodically. A sim full of idle units is a
         # meaningless benchmark -- it measures the early-out, not the game.
         world.step(_retask(world) if i % 400 == 399 else None)
     elapsed = time.perf_counter() - start
