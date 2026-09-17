@@ -63,9 +63,16 @@ class Hud:
         x = col_resources
         y = self.rect.y + 12
 
+        # Gatherer counts sit right next to the resource they're assigned to,
+        # not off in the economy block, so "who's on wood" reads at a glance
+        # against "how much wood".
+        act = world.villager_activity(player)
         res = world.players[player].resources
         for kind, label in RESOURCE_LABELS.items():
             text = f"{label}: {res[int(kind)]}"
+            gatherers = act.gathering_by_resource[int(kind)]
+            if gatherers:
+                text += f" ({gatherers})"
             self.surface.blit(self.font.render(text, True, TEXT), (x, y))
             y += 19
 
@@ -78,28 +85,21 @@ class Hud:
             x = col_selection
             y = self.rect.y + 12
             sel = [world.units[u] for u in sorted(selected) if u in world.units]
-            for line in (_selection_summary(sel),
-                         f"Carrying: {sum(u.carrying for u in sel)}"):
-                self.surface.blit(self.font.render(line, True, TEXT), (x, y))
-                y += 19
+            # Blank rather than "Nothing selected" -- there is nothing to say
+            # about a selection that does not exist.
+            if sel:
+                for line in (_selection_summary(sel),
+                             f"Carrying: {sum(u.carrying for u in sel)}"):
+                    self.surface.blit(self.font.render(line, True, TEXT), (x, y))
+                    y += 19
 
         # Economy block -- every Villager the player owns, selected or not.
         # These are the numbers you act on, so they must not depend on what
         # happens to be highlighted. "All villagers" rather than "Villagers" so
         # it cannot be misread as a count of the selection above.
-        #
-        # Harvesting/Walking/Idle describe what a Villager is *doing*, not what
-        # it is assigned to, so they match what you see on screen and always
-        # add up to the total.
-        act = world.villager_activity(player)
         x = col_villagers
         y = self.rect.y + 12
-        for line in (
-            f"All villagers: {act.total}",
-            f"Harvesting: {act.harvesting}",
-            f"Walking: {act.walking}",
-            f"Idle: {act.idle}",
-        ):
+        for line in (f"All villagers: {act.total}", f"Idle: {act.idle}"):
             self.surface.blit(self.font.render(line, True, TEXT), (x, y))
             y += 19
 
@@ -230,9 +230,10 @@ class Hud:
 
 
 def _selection_summary(units: list) -> str:
-    """"4 Villagers", or "3 Villagers, 1 Soldier" for a mixed selection."""
-    if not units:
-        return "Nothing selected"
+    """"4 Villagers", or "3 Villagers, 1 Soldier" for a mixed selection.
+
+    Only called with a non-empty selection -- the HUD skips this block
+    entirely rather than asking it to describe an empty one."""
     counts = Counter(u.kind for u in units)
     return ", ".join(
         f"{n} {unit_label(kind, n)}" for kind, n in sorted(counts.items())

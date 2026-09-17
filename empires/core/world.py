@@ -102,6 +102,9 @@ class VillagerActivity:
     idle: int
     gathering: int   # assigned to a resource; overlaps harvesting and walking
     carrying: int    # resource points currently being hauled
+    # ``gathering``, broken down by what each Villager is assigned to collect.
+    # Indexed by Resource, like a cost vector; sums to ``gathering``.
+    gathering_by_resource: tuple[int, ...]
 
 
 class World:
@@ -196,6 +199,7 @@ class World:
         Villager.
         """
         total = harvesting = walking = idle = gathering = carrying = 0
+        by_resource = [0] * len(Resource)
         for uid in sorted(self.units):
             u = self.units[uid]
             if u.owner != owner or not u.spec.can_gather:
@@ -204,6 +208,11 @@ class World:
             carrying += u.carrying
             if u.order in (Order.GATHER, Order.RETURN):
                 gathering += 1
+                # ``gather_resource`` outlives the order across a RETURN trip,
+                # so a Villager hauling a load still counts against what it is
+                # assigned to, not what it happens to be carrying.
+                if u.gather_resource is not None:
+                    by_resource[int(u.gather_resource)] += 1
 
             # Physical state, keyed off the path rather than the order: a
             # Villager with somewhere left to walk is walking, whatever the
@@ -217,7 +226,9 @@ class World:
                 # Arrived and working in place: harvesting a tile, or standing
                 # at the drop-off about to unload.
                 harvesting += 1
-        return VillagerActivity(total, harvesting, walking, idle, gathering, carrying)
+        return VillagerActivity(
+            total, harvesting, walking, idle, gathering, carrying, tuple(by_resource)
+        )
 
     def building_at(self, tile: Tile) -> Building | None:
         for b in self.buildings.values():
