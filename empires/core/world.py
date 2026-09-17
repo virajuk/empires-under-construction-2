@@ -23,7 +23,7 @@ import numpy as np
 
 from ..config import SimConfig
 from . import mapgen
-from .commands import CancelTrain, Command, Gather, Move, Stop, Train
+from .commands import CancelTrain, Command, Gather, Move, SetRally, Stop, Train
 from .entities import (
     BUILDING_SPECS,
     MAX_QUEUE,
@@ -321,34 +321,55 @@ class World:
         if not self.in_bounds(cmd.target):
             return
 
+        if isinstance(cmd, SetRally):
+            b = self._owned_building(cmd.owner, cmd.building_id)
+            if b is not None:
+                b.rally = cmd.target
+            return
+
         if isinstance(cmd, Move):
             for u in self._owned(cmd):
-                u.order = Order.MOVE
-                u.target = cmd.target
-                u.gather_timer = 0
-                u.gather_resource = None
-                u.path = self._route(u.tile, cmd.target) or []
-                if not u.path:
-                    u.order = Order.IDLE
+                self._order_move(u, cmd.target)
 
         elif isinstance(cmd, Gather):
-            tx, ty = cmd.target
-            if not is_harvestable(self.terrain[ty, tx]) or self.resources[ty, tx] <= 0:
+            kind = self.harvestable_kind(cmd.target)
+            if kind is None:
                 return
-            kind = YIELDS[Terrain(self.terrain[ty, tx])]
             for u in self._owned(cmd):
-                if not u.spec.can_gather:
-                    continue
-                # A villager already hauling something else drops it rather than
-                # mixing loads -- the simplest rule that stays predictable.
-                if u.carry_kind is not None and u.carry_kind is not kind:
-                    u.carrying = 0
-                    u.carry_kind = None
-                u.order = Order.GATHER
-                u.target = cmd.target
-                u.gather_resource = kind
-                u.gather_timer = 0
-                u.path = []
+                if u.spec.can_gather:
+                    self._order_gather(u, cmd.target, kind)
+
+    def harvestable_kind(self, tile: Tile) -> Resource | None:
+        """What a unit sent to ``tile`` would harvest, or ``None``.
+
+        The one place that answers "is this worth gathering", so an order, a
+        rally point and the UI's right-click hint cannot disagree about it.
+        """
+        tx, ty = tile
+        if not is_harvestable(self.terrain[ty, tx]) or self.resources[ty, tx] <= 0:
+            return None
+        return YIELDS[Terrain(self.terrain[ty, tx])]
+
+    def _order_move(self, u: Unit, tile: Tile) -> None:
+        u.order = Order.MOVE
+        u.target = tile
+        u.gather_timer = 0
+        u.gather_resource = None
+        u.path = self._route(u.tile, tile) or []
+        if not u.path:
+            u.order = Order.IDLE
+
+    def _order_gather(self, u: Unit, tile: Tile, kind: Resource) -> None:
+        # A villager already hauling something else drops it rather than
+        # mixing loads -- the simplest rule that stays predictable.
+        if u.carry_kind is not None and u.carry_kind is not kind:
+            u.carrying = 0
+            u.carry_kind = None
+        u.order = Order.GATHER
+        u.target = tile
+        u.gather_resource = kind
+        u.gather_timer = 0
+        u.path = []
 
     def _apply_train(self, cmd: Train) -> None:
         """Queue a unit, charging for it up front.
@@ -404,10 +425,27 @@ class World:
             # door rather than dropping it: the timer stays spent, so it pops
             # out the moment a tile frees up.
             return
-        self.add_unit(b.owner, kind, *tile)
+        unit = self.add_unit(b.owner, kind, *tile)
+        if b.rally is not None:
+            self._send_to_rally(unit, b.rally)
         b.queue.pop(0)
         b.train_timer = 0
         report.trained[b.owner] += 1
+
+    def _send_to_rally(self, u: Unit, tile: Tile) -> None:
+        """Walk a finished unit to its building's rally point, harvesting it
+        if there is anything there to harvest.
+
+        Decided now rather than when the point was set: the tile may have
+        been picked clean since, and a villager sent to a stump should just
+        walk to it. Deliberately the same rule a right-click uses, so a rally
+        point behaves like having ordered the unit there yourself.
+        """
+        kind = self.harvestable_kind(tile) if u.spec.can_gather else None
+        if kind is None:
+            self._order_move(u, tile)
+        else:
+            self._order_gather(u, tile, kind)
 
     def spawn_tile_for(self, b: Building) -> Tile | None:
         """Where a unit produced at ``b`` appears: just below it, or the
@@ -631,7 +669,7 @@ class World:
             b = self.buildings[bid]
             hasher.update(
                 f"{b.bid},{b.owner},{b.x},{b.y},{b.hp},"
-                f"{[int(k) for k in b.queue]},{b.train_timer}".encode()
+                f"{[int(k) for k in b.queue]},{b.train_timer},{b.rally}".encode()
             )
         for p in self.players:
             hasher.update(str(p.resources).encode())

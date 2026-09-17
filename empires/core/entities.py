@@ -167,6 +167,10 @@ class Building:
     # ``train_timer`` counts ticks spent on ``queue[0]``.
     queue: list[UnitKind] = field(default_factory=list)
     train_timer: int = 0
+    # Where finished units are sent. ``None`` leaves them standing at the
+    # door. The tile is stored raw rather than as a resolved order: what is
+    # on it can change between setting the point and the unit walking out.
+    rally: Tile | None = None
 
     @property
     def spec(self) -> BuildingSpec:

@@ -52,4 +52,18 @@ class CancelTrain:
     building_id: int
 
 
-Command = Move | Gather | Stop | Train | CancelTrain
+@dataclass(frozen=True)
+class SetRally:
+    """Point a building's output at a tile.
+
+    Every unit it finishes from now on walks there -- and harvests it, if
+    there is anything on it to harvest. The tile is kept as a tile, not as a
+    resolved order: a bush can be picked clean between setting the point and
+    the next villager walking out of the door.
+    """
+    owner: int
+    building_id: int
+    target: Tile
+
+
+Command = Move | Gather | Stop | Train | CancelTrain | SetRally

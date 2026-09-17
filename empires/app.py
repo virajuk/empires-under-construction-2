@@ -15,7 +15,7 @@ from __future__ import annotations
 import pygame
 
 from .config import RenderConfig, SimConfig
-from .core.commands import CancelTrain, Command, Gather, Move, Stop, Train
+from .core.commands import CancelTrain, Command, Gather, Move, SetRally, Stop, Train
 from .core.entities import Order, UnitKind
 from .core.terrain import is_harvestable
 from .core.world import World
@@ -317,12 +317,17 @@ class App:
         """Right-click: gather if the tile holds a resource, otherwise move.
 
         This "smart order" is deliberately the same rule the RL action space
-        uses, so a policy and a person express intent identically.
+        uses, so a policy and a person express intent identically. With a
+        building selected the same click sets its rally point instead, which
+        is the same rule again, applied to units that do not exist yet.
         """
-        if not self.selected:
-            return
         tile = self.camera.screen_to_tile(*pos)
         if not self.world.in_bounds(tile):
+            return
+        if self.selected_building is not None:
+            self.pending.append(SetRally(self.player, self.selected_building, tile))
+            return
+        if not self.selected:
             return
         ids = tuple(sorted(self.selected))
         tx, ty = tile
@@ -391,7 +396,8 @@ class App:
                         abs(end[0] - self._drag_start[0]), abs(end[1] - self._drag_start[1]),
                     )
 
-                self.renderer.draw(self.world, self.selected, self.player, drag_rect)
+                self.renderer.draw(self.world, self.selected, self.player,
+                                   drag_rect, self.selected_building)
                 self.hud.draw(self.world, self.camera, self.selected,
                               self.player, self.clock.get_fps(),
                               self.selected_building)

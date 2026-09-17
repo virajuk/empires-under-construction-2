@@ -43,6 +43,7 @@ PLAYER_COLOURS: tuple[tuple[int, int, int], ...] = (
 GRID_COLOUR = (0, 0, 0, 28)
 SELECT_COLOUR = (250, 250, 210)
 PATH_COLOUR = (240, 240, 200)
+RALLY_COLOUR = (250, 216, 96)
 
 # Terrain drawn as bare ground with a sprite on top, not as a flat colour.
 # Derived from the art table, so the two cannot disagree.
@@ -145,10 +146,12 @@ class Renderer:
     # ----------------------------------------------------------------- draw
 
     def draw(self, world: World, selected: set[int], player: int,
-             drag_rect: pygame.Rect | None = None) -> None:
+             drag_rect: pygame.Rect | None = None,
+             selected_building: int | None = None) -> None:
         self.surface.fill((20, 24, 20))
         self._draw_terrain(world)
         self._draw_world_objects(world, selected)
+        self._draw_rally_point(world, selected_building)
         self._draw_paths(world, selected)
         if drag_rect is not None:
             pygame.draw.rect(self.surface, SELECT_COLOUR, drag_rect, width=1)
@@ -302,6 +305,27 @@ class Renderer:
         pygame.draw.rect(self.surface, (120, 190, 120),
                          (bar.x, bar.y, max(2, int(bar.width * frac)), bar.height),
                          border_radius=2)
+
+    def _draw_rally_point(self, world: World, selected_building: int | None) -> None:
+        """The selected building's rally point: a line to a marked tile.
+
+        Only while it is selected. Drawing every building's point at once
+        would criss-cross the map with lines nobody asked to see, and since
+        you can only select your own, it never shows where an opponent is
+        sending its production either.
+        """
+        if selected_building is None:
+            return
+        b = world.buildings.get(selected_building)
+        if b is None or b.rally is None:
+            return
+        cam = self.camera
+        tx, ty = b.rally
+        start = cam.world_to_screen(b.x + b.w, b.y + b.h)
+        end = cam.world_to_screen(tx + 0.5, ty + 0.5)
+        pygame.draw.line(self.surface, RALLY_COLOUR, start, end, 1)
+        pygame.draw.polygon(self.surface, RALLY_COLOUR,
+                            _tile_diamond(cam, tx, ty), width=2)
 
     def _draw_paths(self, world: World, selected: set[int]) -> None:
         cam = self.camera
