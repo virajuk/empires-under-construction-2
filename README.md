@@ -142,9 +142,19 @@ Sprites live in `empires/graphics/`:
 | `home.png` | Town Center |
 | `tree/*.png` | Forest tiles |
 | `berry_bushes/*.png` | Berry tiles |
+| `gold/*.png` | Gold tiles |
+| `stone/*.png` | Stone tiles |
 
-Drop more PNGs into `tree/` or `berry_bushes/` and they join the rotation
-automatically — the loader takes every PNG in the directory, sorted.
+Drop more PNGs into any of those directories and they join the rotation
+automatically — the loader takes every PNG in the directory, sorted. Removing
+one is how you retire it; nothing else needs editing.
+
+Adding a decorated terrain is three lines: a directory in `DECOR_DIRS`
+([`assets.py`](empires/render/assets.py)), a `*_scale` on `RenderConfig`, and
+the line in `Renderer.__init__` that ties the two together. `DECOR_TERRAIN` and
+the per-terrain sprite tables are derived from `DECOR_DIRS`, so they cannot
+drift out of step. The art tests are parametrised over it, so a new resource
+gets coverage for presence, scaling, trimming and ground colour for free.
 
 Two things are less obvious than they look:
 
@@ -167,12 +177,19 @@ disable in `RenderConfig`:
 
 ```python
 use_sprites = True     # False falls back to flat colour tiles
-tree_scale = 1.9       # multiples of a tile; >1 overlaps neighbours
+tree_scale = 1.6       # multiples of a tile; >1 overlaps neighbours
 bush_scale = 1.4
+gold_scale = 1.1       # solid patches, so these stay near 1.0
+stone_scale = 1.1
 building_scale = 2.0
 ```
 
-Terrain with no art yet — water, gold, stone — still draws as flat colour.
+Water is the only terrain still drawn as flat colour.
+
+Source PNGs are normalised on load: palettised 8-bit images are widened to
+32-bit, because `smoothscale` rejects anything narrower and `convert_alpha`
+cannot run without a display (which is the case for the RL env's `rgb_array`
+render).
 
 ## Production
 

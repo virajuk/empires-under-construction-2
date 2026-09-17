@@ -20,11 +20,21 @@ from pathlib import Path
 
 import pygame
 
-GRAPHICS_DIR = Path(__file__).resolve().parent.parent / "graphics"
+from ..core.terrain import Terrain
 
-TREE_DIR = "tree"
-BUSH_DIR = "berry_bushes"
+GRAPHICS_DIR = Path(__file__).resolve().parent.parent / "graphics"
 TOWN_CENTER_FILE = "home.png"
+
+# Which subdirectory decorates which terrain. One table rather than a set of
+# fields per resource: adding a decorated terrain is a line here, a scale in
+# RenderConfig, and nothing else. Keyed by the raw terrain value because the
+# draw loop indexes it with a numpy cell.
+DECOR_DIRS: dict[int, str] = {
+    int(Terrain.FOREST): "tree",
+    int(Terrain.BERRY): "berry_bushes",
+    int(Terrain.GOLD): "gold",
+    int(Terrain.STONE): "stone",
+}
 
 # Large primes; the standard spatial hash. Any decent mix works -- what matters
 # is that it depends only on position and seed, never on frame or wall clock.
@@ -42,11 +52,28 @@ def variant_index(x: int, y: int, seed: int, count: int) -> int:
 
 
 def _convert(surface: pygame.Surface) -> pygame.Surface:
-    """``convert_alpha`` needs a display; offscreen renders have none."""
+    """Normalise to something the rest of the pipeline can scale.
+
+    ``convert_alpha`` needs a display, which an offscreen render (the RL env's
+    ``rgb_array`` mode) does not have. Falling back to the raw surface is not
+    enough on its own: a palettised PNG loads as 8-bit, and
+    ``pygame.transform.smoothscale`` only accepts 24- or 32-bit surfaces, so it
+    raised on the gold icons while the 32-bit tree art happened to work. Copy
+    anything narrower onto a 32-bit surface by hand.
+    """
     try:
         return surface.convert_alpha()
     except pygame.error:
+        return _widen(surface)
+
+
+def _widen(surface: pygame.Surface) -> pygame.Surface:
+    """Copy a narrow surface onto a 32-bit one, leaving wider ones alone."""
+    if surface.get_bitsize() >= 24:
         return surface
+    out = pygame.Surface(surface.get_size(), pygame.SRCALPHA, 32)
+    out.blit(surface, (0, 0))
+    return out
 
 
 def _load(path: Path) -> pygame.Surface | None:
@@ -115,11 +142,13 @@ def _fit(surface: pygame.Surface, box: int) -> pygame.Surface:
 class Assets:
     """Sprites scaled for one tile size. Cheap to build, so rebuild on zoom."""
 
-    def __init__(self, tile_size: int, tree_scale: float = 1.45,
-                 bush_scale: float = 1.15, enabled: bool = True) -> None:
+    def __init__(self, tile_size: int,
+                 scales: dict[int, float] | None = None,
+                 enabled: bool = True) -> None:
         self.tile_size = tile_size
-        self.trees: list[pygame.Surface] = []
-        self.bushes: list[pygame.Surface] = []
+        # Terrain value -> its pre-scaled sprite variants. The draw loop reads
+        # this dict directly, so a tile with no art is a single failed lookup.
+        self.decor: dict[int, list[pygame.Surface]] = {}
         self._town_center_src: pygame.Surface | None = None
         self._building_cache: dict[tuple[int, int], pygame.Surface] = {}
 
@@ -129,31 +158,26 @@ class Assets:
         if not enabled:
             return
 
-        tree_px = int(tile_size * tree_scale)
-        bush_px = int(tile_size * bush_scale)
-        self.trees = [_fit(_trim(s), tree_px) for s in _load_dir(TREE_DIR)]
-        self.bushes = [_fit(_trim(s), bush_px) for s in _load_dir(BUSH_DIR)]
+        scales = scales or {}
+        for terrain, directory in DECOR_DIRS.items():
+            box = max(1, int(tile_size * scales.get(terrain, 1.0)))
+            variants = [_fit(_trim(s), box) for s in _load_dir(directory)]
+            if variants:
+                self.decor[terrain] = variants
 
         src = _load(GRAPHICS_DIR / TOWN_CENTER_FILE)
         self._town_center_src = _trim(src) if src is not None else None
 
-    @property
-    def has_trees(self) -> bool:
-        return bool(self.trees)
+    def has_decor(self, terrain: int) -> bool:
+        return bool(self.decor.get(int(terrain)))
 
-    @property
-    def has_bushes(self) -> bool:
-        return bool(self.bushes)
-
-    def tree(self, x: int, y: int, seed: int) -> pygame.Surface | None:
-        if not self.trees:
+    def decor_sprite(self, terrain: int, x: int, y: int,
+                     seed: int) -> pygame.Surface | None:
+        """The sprite for tile ``(x, y)``, chosen deterministically."""
+        variants = self.decor.get(int(terrain))
+        if not variants:
             return None
-        return self.trees[variant_index(x, y, seed, len(self.trees))]
-
-    def bush(self, x: int, y: int, seed: int) -> pygame.Surface | None:
-        if not self.bushes:
-            return None
-        return self.bushes[variant_index(x, y, seed, len(self.bushes))]
+        return variants[variant_index(x, y, seed, len(variants))]
 
     def town_center(self, width_px: int, height_px: int) -> pygame.Surface | None:
         """Town Center art fitted to a box, cached per size.

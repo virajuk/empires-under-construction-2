@@ -33,7 +33,7 @@ class SimConfig:
     start_villagers: int = 4
     villager_speed: float = 0.12       # tiles per tick
     villager_carry_capacity: int = 10
-    gather_ticks_per_unit: int = 4     # ticks to harvest 1 resource point
+    gather_ticks_per_unit: int = 6     # ticks to harvest 1 resource point
     # How far a villager will look for more of the same resource when its tile
     # runs out. Bounded so it moves to the next bush rather than silently
     # trekking across the map; past this it goes idle and waits for orders.
@@ -75,4 +75,8 @@ class RenderConfig:
     # of forest read as a canopy rather than a checkerboard.
     tree_scale: float = 1.6
     bush_scale: float = 1.4
+    # Gold sits in solid patches, so it stays near 1.0 -- much above that and
+    # neighbouring tiles overlap into an unreadable mound.
+    gold_scale: float = 1.1
+    stone_scale: float = 1.1
     building_scale: float = 2.0

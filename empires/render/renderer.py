@@ -13,7 +13,7 @@ from ..config import RenderConfig
 from ..core.entities import UNIT_SPECS, BuildingKind, Order, Unit
 from ..core.terrain import Terrain
 from ..core.world import World
-from .assets import Assets
+from .assets import DECOR_DIRS, Assets, variant_index
 from .camera import Camera
 
 TERRAIN_COLOURS: dict[int, tuple[int, int, int]] = {
@@ -37,7 +37,8 @@ SELECT_COLOUR = (250, 250, 210)
 PATH_COLOUR = (240, 240, 200)
 
 # Terrain drawn as bare ground with a sprite on top, not as a flat colour.
-DECOR_TERRAIN = (Terrain.FOREST, Terrain.BERRY)
+# Derived from the art table, so the two cannot disagree.
+DECOR_TERRAIN: tuple[Terrain, ...] = tuple(Terrain(t) for t in DECOR_DIRS)
 
 # Decor is taller than its tile and stands on the tile's bottom edge, so
 # sprites belonging to tiles just outside the viewport still reach into it.
@@ -61,8 +62,17 @@ class Renderer:
         self.camera = camera
         self.cfg = cfg or RenderConfig()
         ts = camera.tile_size
+        # The only place a config field is tied to a terrain. Adding a
+        # decorated resource is a line here, a line in DECOR_DIRS, and a scale
+        # on RenderConfig.
         self.assets = Assets(
-            ts, self.cfg.tree_scale, self.cfg.bush_scale,
+            ts,
+            scales={
+                int(Terrain.FOREST): self.cfg.tree_scale,
+                int(Terrain.BERRY): self.cfg.bush_scale,
+                int(Terrain.GOLD): self.cfg.gold_scale,
+                int(Terrain.STONE): self.cfg.stone_scale,
+            },
             enabled=self.cfg.use_sprites,
         )
 
@@ -76,11 +86,7 @@ class Renderer:
     # ---------------------------------------------------------------- setup
 
     def _has_decor_for(self, terrain: Terrain) -> bool:
-        if terrain is Terrain.FOREST:
-            return self.assets.has_trees
-        if terrain is Terrain.BERRY:
-            return self.assets.has_bushes
-        return False
+        return self.assets.has_decor(terrain)
 
     def _make_tile(self, terrain: Terrain, colour: tuple[int, int, int],
                    ts: int) -> pygame.Surface:
@@ -141,7 +147,7 @@ class Renderer:
                 blit(self._tiles[int(row[tx])], (int(tx * ts - cam.x), sy))
 
     def _draw_decor(self, world: World) -> None:
-        if not (self.assets.has_trees or self.assets.has_bushes):
+        if not self.assets.decor:
             return
         cam = self.camera
         ts = cam.tile_size
@@ -152,20 +158,18 @@ class Renderer:
 
         seed = world.seed
         blit = self.surface.blit
+        decor = self.assets.decor
         # Top row first, so a nearer tree overlaps the one behind it.
         for ty in range(y0, y1):
             row = world.terrain[ty]
             base_y = int(ty * ts - cam.y) + ts
             for tx in range(x0, x1):
-                terrain = row[tx]
-                if terrain == Terrain.FOREST:
-                    sprite = self.assets.tree(tx, ty, seed)
-                elif terrain == Terrain.BERRY:
-                    sprite = self.assets.bush(tx, ty, seed)
-                else:
+                variants = decor.get(int(row[tx]))
+                if not variants:
                     continue
-                if sprite is None:
-                    continue
+                # Indexed inline rather than through Assets: this runs for
+                # every visible tile, so it is the one hot loop in the renderer.
+                sprite = variants[variant_index(tx, ty, seed, len(variants))]
                 # Centred on the tile, standing on its bottom edge.
                 sx = int(tx * ts - cam.x) + (ts - sprite.get_width()) // 2
                 blit(sprite, (sx, base_y - sprite.get_height()))
