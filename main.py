@@ -23,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--players", type=int, default=None, help="number of players")
     p.add_argument("--tile-size", type=int, default=None, help="pixels per tile")
     p.add_argument("--fps", type=int, default=None, help="render frame cap")
+    p.add_argument("--sprites", action=argparse.BooleanOptionalAction, default=None,
+                   help="draw the sprite art instead of flat colour tiles")
     p.add_argument("--tps", type=int, default=None, help="simulation ticks per second")
     p.add_argument("--bench", action="store_true",
                    help="run the sim headless and report ticks/sec, then exit")
@@ -53,7 +55,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     render_cfg = RenderConfig()
-    render_overrides = {"tile_size": args.tile_size, "fps": args.fps}
+    render_overrides = {
+        "tile_size": args.tile_size,
+        "fps": args.fps,
+        "use_sprites": args.sprites,
+    }
     render_cfg = replace(
         render_cfg, **{k: v for k, v in render_overrides.items() if v is not None}
     )

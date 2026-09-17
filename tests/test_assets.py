@@ -41,8 +41,12 @@ def _display():
 
 
 def build(cfg: RenderConfig | None = None) -> Renderer:
-    """A renderer on a scratch surface -- exercises the real config wiring."""
-    cfg = cfg or RenderConfig()
+    """A renderer on a scratch surface -- exercises the real config wiring.
+
+    Sprites are forced on: this module tests the art pipeline, so it must not
+    go quiet just because the app now defaults to flat colour tiles.
+    """
+    cfg = cfg or RenderConfig(use_sprites=True)
     world = World(SimConfig(), seed=3)
     camera = Camera(world.width, world.height, TS, 320, 240)
     return Renderer(pygame.Surface((320, 240)), camera, cfg)
@@ -109,7 +113,7 @@ def test_town_center_art_is_present(art):
 
 @pytest.mark.parametrize("terrain,field", SCALE_FIELDS.items())
 def test_each_terrain_is_scaled_by_its_own_knob(terrain, field):
-    cfg = RenderConfig()
+    cfg = RenderConfig(use_sprites=True)
     art = build(cfg).assets
     box = int(TS * getattr(cfg, field))
     for sprite in art.decor[int(terrain)]:

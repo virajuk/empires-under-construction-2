@@ -10,6 +10,7 @@ pip install -r requirements.txt
 
 python main.py                  # play
 python main.py --seed 7         # a specific map
+python main.py --sprites        # sprite art instead of flat colour tiles
 python main.py --bench          # headless throughput, no window
 pytest                          # 91 tests
 ```
@@ -135,6 +136,22 @@ value makes `IntEnum` silently alias two names and merge their stockpiles.
 
 ## Art
 
+**The game draws flat colour tiles by default.** Sprite art exists and is fully
+wired up, but it is off unless you ask for it:
+
+```bash
+python main.py --sprites      # sprite art
+python main.py                # flat colour tiles (default)
+```
+
+It is a look preference, not a performance one. Measured on a view packed with
+99 decorated tiles, the decor pass costs **0.67 ms of a 16.67 ms frame budget**
+— the flat terrain pass beneath it costs more than twice that, and the whole
+frame lands at ~2.4 ms with sprites or ~1.9 ms without. Both are capped at 60
+FPS by `clock.tick()`, so the difference never reaches the screen. Rendering has
+no effect at all on headless simulation or RL throughput, since
+`empires/core/` never imports pygame.
+
 Sprites live in `empires/graphics/`:
 
 | Path | Used for |
@@ -172,11 +189,13 @@ trunk — so all ground goes down first, then decor, top row to bottom, giving
 nearer trees the overlap.
 
 Missing art is never fatal: every sprite lookup can return `None` and each has a
-flat-colour fallback, so a fresh clone without `graphics/` still runs. Tune or
-disable in `RenderConfig`:
+flat-colour fallback, so a fresh clone without `graphics/` still runs, and so
+does the default flat-colour mode. Overlays that sit on top of a building —
+the selection ring and the training progress bar — are drawn on both paths.
+Tune or enable in `RenderConfig`:
 
 ```python
-use_sprites = True     # False falls back to flat colour tiles
+use_sprites = False    # True draws the sprite art; --sprites flips it
 tree_scale = 1.6       # multiples of a tile; >1 overlaps neighbours
 bush_scale = 1.4
 gold_scale = 1.1       # solid patches, so these stay near 1.0
@@ -184,7 +203,7 @@ stone_scale = 1.1
 building_scale = 2.0
 ```
 
-Water is the only terrain still drawn as flat colour.
+With sprites on, water is the only terrain still drawn as flat colour.
 
 Source PNGs are normalised on load: palettised 8-bit images are widened to
 32-bit, because `smoothscale` rejects anything narrower and `convert_alpha`

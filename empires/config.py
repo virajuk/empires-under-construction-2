@@ -65,9 +65,12 @@ class RenderConfig:
     edge_scroll_margin: int = 0      # set >0 to enable edge scrolling
 
     # --- sprites ---
-    # Set use_sprites False to fall back to flat colour tiles everywhere, which
-    # is also what happens automatically when empires/graphics is missing.
-    use_sprites: bool = True
+    # Off by default: flat colour tiles everywhere, which is also what happens
+    # automatically when empires/graphics is missing. Turn it on for the art in
+    # empires/graphics -- it costs about 0.7ms of a 16.7ms frame, so this is a
+    # look preference rather than a performance one. `python main.py --sprites`
+    # flips it without editing anything.
+    use_sprites: bool = False
     # Multiples of a tile, applied to the *visible* artwork: sprites are
     # trimmed of transparent margin before scaling, so these are directly
     # comparable to each other and stay meaningful when new art is dropped in.
