@@ -108,7 +108,7 @@ def test_art_is_present_for_every_decorated_terrain(art, terrain):
 
 
 def test_town_center_art_is_present(art):
-    assert art.town_center(44, 44) is not None, "home.png missing"
+    assert art.town_center(44, 44) is not None, "buildings/town_center.png missing"
 
 
 @pytest.mark.parametrize("terrain,field", SCALE_FIELDS.items())
@@ -227,9 +227,15 @@ def test_repeated_draws_are_identical():
 @pytest.mark.parametrize("terrain", DECORATED)
 def test_decorated_tiles_are_drawn_over_plain_ground(terrain):
     """Decor sits on grass, so the tile beneath must not still be a flat
-    coloured square showing round the edges of the artwork."""
+    coloured diamond showing round the edges of the artwork.
+
+    Sampled at the tile's centre -- the one point guaranteed to fall inside
+    the diamond regardless of its width and height, unlike a fixed corner
+    offset that assumed a square tile."""
     renderer = build()
-    ground = renderer._tiles[int(terrain)].get_at((TS // 2, TS // 4))[:3]
+    tile = renderer._tiles[int(terrain)]
+    centre = (tile.get_width() // 2, tile.get_height() // 2)
+    ground = tile.get_at(centre)[:3]
     assert ground == TERRAIN_COLOURS[Terrain.GRASS]
 
 

@@ -59,7 +59,7 @@ does.
 | `empires/core/entities.py` | Units, buildings, and the specs carrying their names. |
 | `empires/render/` | Camera, tile renderer, HUD, minimap. |
 | `empires/render/assets.py` | Sprite loading and per-tile variety. |
-| `empires/graphics/` | The art: `home.png`, `tree/`, `berry_bushes/`. |
+| `empires/graphics/` | The art: `buildings/town_center.png`, `tree/`, `berry_bushes/`. |
 | `empires/env/` | Gymnasium-style env and the observation encoder. |
 | `empires/app.py` | The playable game: input → commands → world → pixels. |
 | `main.py` | Argument parsing. Thin, so it is never on a training import path. |
@@ -156,7 +156,7 @@ Sprites live in `empires/graphics/`:
 
 | Path | Used for |
 | --- | --- |
-| `home.png` | Town Center |
+| `buildings/town_center.png` | Town Center |
 | `tree/*.png` | Forest tiles |
 | `berry_bushes/*.png` | Berry tiles |
 | `gold/*.png` | Gold tiles |

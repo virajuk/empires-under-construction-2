@@ -54,7 +54,6 @@ class Hud:
         # sized for the longest string each block can produce.
         col_resources = self.rect.x + 14
         col_selection = self.rect.x + 150     # .. 370: "12 Villagers, 34 Soldiers"
-        col_villagers = self.rect.x + 380     # .. 520: "All villagers: 12"
         col_status = self.rect.x + 530        # .. 800: the hint line
         # Actions are pinned to the right, clear of the minimap, so the button
         # does not move when the blocks to its left change width.
@@ -64,8 +63,12 @@ class Hud:
         y = self.rect.y + 12
 
         # Gatherer counts sit right next to the resource they're assigned to,
-        # not off in the economy block, so "who's on wood" reads at a glance
-        # against "how much wood".
+        # not off in a separate economy block, so "who's on wood" reads at a
+        # glance against "how much wood". Idle and the running total close
+        # out the column -- every Villager the player owns, selected or not,
+        # so these must not depend on what happens to be highlighted.
+        # "All villagers" rather than "Villagers" so the bottom row cannot be
+        # misread as a count of the selection in the next column.
         act = world.villager_activity(player)
         res = world.players[player].resources
         for kind, label in RESOURCE_LABELS.items():
@@ -74,6 +77,9 @@ class Hud:
             if gatherers:
                 text += f" ({gatherers})"
             self.surface.blit(self.font.render(text, True, TEXT), (x, y))
+            y += 19
+        for line in (f"Idle: {act.idle}", f"All villagers: {act.total}"):
+            self.surface.blit(self.font.render(line, True, TEXT), (x, y))
             y += 19
 
         # Selection block -- scoped to what is highlighted right now.
@@ -92,16 +98,6 @@ class Hud:
                              f"Carrying: {sum(u.carrying for u in sel)}"):
                     self.surface.blit(self.font.render(line, True, TEXT), (x, y))
                     y += 19
-
-        # Economy block -- every Villager the player owns, selected or not.
-        # These are the numbers you act on, so they must not depend on what
-        # happens to be highlighted. "All villagers" rather than "Villagers" so
-        # it cannot be misread as a count of the selection above.
-        x = col_villagers
-        y = self.rect.y + 12
-        for line in (f"All villagers: {act.total}", f"Idle: {act.idle}"):
-            self.surface.blit(self.font.render(line, True, TEXT), (x, y))
-            y += 19
 
         x = col_status
         y = self.rect.y + 12
@@ -209,15 +205,18 @@ class Hud:
             colour = PLAYER_COLOURS[b.owner % len(PLAYER_COLOURS)]
             self.surface.fill(colour, (mm_rect.x + int(b.x * sx), mm_rect.y + int(b.y * sy), 4, 4))
 
-        # Viewport box.
-        ts = camera.tile_size
-        view = pygame.Rect(
-            mm_rect.x + int(camera.x / ts * sx),
-            mm_rect.y + int(camera.y / ts * sy),
-            max(2, int(camera.view_w / ts * sx)),
-            max(2, int(camera.view_h / ts * sy)),
-        )
-        pygame.draw.rect(self.surface, TEXT, view, width=1)
+        # Viewport box. The minimap stays top-down regardless of how the main
+        # view is projected, so this maps each screen corner through
+        # ``screen_to_world`` rather than assuming ``camera.x`` is a plain
+        # multiple of a tile -- true for an orthogonal camera, not for an
+        # isometric one, where the viewport back-projects to a rotated
+        # quadrilateral rather than an axis-aligned box.
+        corners = ((0, 0), (camera.view_w, 0), (camera.view_w, camera.view_h), (0, camera.view_h))
+        points = []
+        for cx, cy in corners:
+            wx, wy = camera.screen_to_world(cx, cy)
+            points.append((mm_rect.x + wx * sx, mm_rect.y + wy * sy))
+        pygame.draw.polygon(self.surface, TEXT, points, width=1)
         pygame.draw.rect(self.surface, PANEL_LINE, mm_rect, width=1)
 
     def _render_terrain_minimap(self, world: World, w: int, h: int) -> pygame.Surface:

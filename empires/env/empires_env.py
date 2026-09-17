@@ -187,13 +187,13 @@ class EmpiresEnv(_Base):  # type: ignore[misc,valid-type]
         if self._renderer is None:
             pygame.init()
             cfg = RenderConfig()
-            surface = pygame.Surface(
-                (self.world.width * cfg.tile_size, self.world.height * cfg.tile_size)
-            )
-            camera = Camera(
-                self.world.width, self.world.height, cfg.tile_size,
-                surface.get_width(), surface.get_height(),
-            )
+            # The camera knows its own projected size (a plain
+            # width*tile_size rectangle for an orthogonal view, the bounding
+            # box of a diamond for an isometric one) -- sized here rather than
+            # assumed, so the whole map fits the frame under either.
+            camera = Camera(self.world.width, self.world.height, cfg.tile_size, 1, 1)
+            surface = pygame.Surface((camera.world_px_w, camera.world_px_h))
+            camera.resize(surface.get_width(), surface.get_height())
             self._renderer = (surface, Renderer(surface, camera, cfg))
 
         surface, renderer = self._renderer

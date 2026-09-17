@@ -59,7 +59,9 @@ class RenderConfig:
     tile_size: int = 22
     window_width: int = 1280
     window_height: int = 720
-    panel_height: int = 92
+    # Tall enough for the resource column's 6 rows (4 resources, Idle, All
+    # villagers) at the HUD's 19px line height, plus top and bottom margin.
+    panel_height: int = 140
     fps: int = 60
     camera_speed: float = 700.0      # pixels per second
     edge_scroll_margin: int = 0      # set >0 to enable edge scrolling

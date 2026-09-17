@@ -23,7 +23,7 @@ import pygame
 from ..core.terrain import Terrain
 
 GRAPHICS_DIR = Path(__file__).resolve().parent.parent / "graphics"
-TOWN_CENTER_FILE = "home.png"
+TOWN_CENTER_FILE = "buildings/town_center.png"
 
 # Which subdirectory decorates which terrain. One table rather than a set of
 # fields per resource: adding a decorated terrain is a line here, a scale in
