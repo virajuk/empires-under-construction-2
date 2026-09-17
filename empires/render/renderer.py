@@ -145,11 +145,10 @@ class Renderer:
     # ----------------------------------------------------------------- draw
 
     def draw(self, world: World, selected: set[int], player: int,
-             drag_rect: pygame.Rect | None = None,
-             selected_building: int | None = None) -> None:
+             drag_rect: pygame.Rect | None = None) -> None:
         self.surface.fill((20, 24, 20))
         self._draw_terrain(world)
-        self._draw_world_objects(world, selected, selected_building)
+        self._draw_world_objects(world, selected)
         self._draw_paths(world, selected)
         if drag_rect is not None:
             pygame.draw.rect(self.surface, SELECT_COLOUR, drag_rect, width=1)
@@ -172,8 +171,7 @@ class Renderer:
                 sx, sy = cam.world_to_screen(tx, ty)
                 blit(tiles[int(row[tx])], (sx - tw // 2, sy))
 
-    def _draw_world_objects(self, world: World, selected: set[int],
-                            selected_building: int | None) -> None:
+    def _draw_world_objects(self, world: World, selected: set[int]) -> None:
         """Decor, buildings and units, back-to-front in one depth order.
 
         Depth is just ``x + y`` at each thing's ground contact point: higher
@@ -220,7 +218,7 @@ class Renderer:
             if kind == "decor":
                 self._draw_decor_sprite(payload[1], payload[2], payload[3])
             elif kind == "building":
-                self._draw_building(payload[1], selected_building, view)
+                self._draw_building(payload[1], view)
             else:
                 self._draw_unit(world, payload[1], payload[2] in selected, view)
 
@@ -231,8 +229,7 @@ class Renderer:
         ax, ay = cam.world_to_screen(tx + 1, ty + 1)
         self.surface.blit(sprite, (ax - sprite.get_width() // 2, ay - sprite.get_height()))
 
-    def _draw_building(self, b: Building, selected_building: int | None,
-                       view: pygame.Rect) -> None:
+    def _draw_building(self, b: Building, view: pygame.Rect) -> None:
         cam = self.camera
         # The footprint's four ground corners, in perimeter order -- a
         # rhombus for anything wider than 1x1, not a screen-aligned rectangle.
@@ -268,7 +265,7 @@ class Renderer:
             self.surface.blit(tag, tag.get_rect(center=bbox.center))
             # Overlays belong on both paths -- without this, selection and
             # training progress disappear whenever the art is missing.
-            self._draw_building_overlays(b, bbox, b.bid == selected_building)
+            self._draw_building_overlays(b, bbox)
             return
 
         self.surface.blit(sprite, (
@@ -286,23 +283,16 @@ class Renderer:
         pygame.draw.rect(self.surface, colour, bar, border_radius=2)
         pygame.draw.rect(self.surface, _shade(colour, 0.5), bar, width=1,
                          border_radius=2)
-        self._draw_building_overlays(b, bbox, b.bid == selected_building)
+        self._draw_building_overlays(b, bbox)
 
-    def _draw_building_overlays(self, b: Building, footprint: pygame.Rect,
-                                is_selected: bool) -> None:
-        """Selection ring and training progress.
+    def _draw_building_overlays(self, b: Building, footprint: pygame.Rect) -> None:
+        """Training progress.
 
-        Both hug the footprint's screen *bounding box*, not the artwork or the
-        true diamond outline: it is what you click (see ``App._building_under``
-        via ``Camera.screen_to_tile``) and what a unit walks out of, so
-        highlighting anything else would misreport where the building
-        actually is.
+        Hugs the footprint's screen *bounding box*, not the artwork: the
+        footprint is what you click (see ``App._building_under`` via
+        ``Camera.screen_to_tile``) and what a unit walks out of, so anchoring
+        to anything else would misreport where the building actually is.
         """
-        if is_selected:
-            ring = footprint.inflate(6, 6)
-            pygame.draw.rect(self.surface, SELECT_COLOUR, ring, width=2,
-                             border_radius=3)
-
         if not b.queue:
             return
         total = max(1, UNIT_SPECS[b.queue[0]].train_ticks)

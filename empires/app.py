@@ -130,10 +130,12 @@ class App:
         elif event.key == pygame.K_v:
             self._queue_villager()
         elif event.key == pygame.K_x:
+            # Same split the command card draws: cancel production at a
+            # building, stop whatever units are selected.
             if self.selected_building is not None:
                 self._cancel_training()
-            elif self.selected:
-                self.pending.append(Stop(self.player, tuple(sorted(self.selected))))
+            else:
+                self._stop_selected()
 
     def _on_mouse_down(self, event: pygame.event.Event) -> None:
         if self.hud.rect.collidepoint(event.pos):
@@ -271,9 +273,28 @@ class App:
             self.selected_building = None
 
     def _on_panel_click(self, pos: tuple[int, int]) -> None:
-        button = self.hud.train_button
-        if button is not None and button.collidepoint(pos):
+        """Route a click on the command card to the same action its key fires.
+
+        A greyed slot is still clickable, for the same reason the hotkey
+        still fires: the click only queues a Command, and the simulation
+        decides on the next tick whether it was legal.
+        """
+        for slot in self.hud.commands:
+            if slot.rect.collidepoint(pos):
+                self._run_command(slot.action)
+                return
+
+    def _run_command(self, action: str) -> None:
+        if action == "train":
             self._queue_villager()
+        elif action == "cancel":
+            self._cancel_training()
+        elif action == "stop":
+            self._stop_selected()
+
+    def _stop_selected(self) -> None:
+        if self.selected:
+            self.pending.append(Stop(self.player, tuple(sorted(self.selected))))
 
     def _queue_villager(self) -> None:
         """Queue a Villager at the selected building.
@@ -370,8 +391,7 @@ class App:
                         abs(end[0] - self._drag_start[0]), abs(end[1] - self._drag_start[1]),
                     )
 
-                self.renderer.draw(self.world, self.selected, self.player,
-                                   drag_rect, self.selected_building)
+                self.renderer.draw(self.world, self.selected, self.player, drag_rect)
                 self.hud.draw(self.world, self.camera, self.selected,
                               self.player, self.clock.get_fps(),
                               self.selected_building)

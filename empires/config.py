@@ -46,7 +46,7 @@ class SimConfig:
     # Berries are the early food source: a small cluster of bushes near each
     # start, each bush holding relatively little, so food runs out first and
     # forces a move to something else later.
-    berry_amount: int = 120
+    berry_amount: int = 500
     berry_bushes_per_cluster: int = 6
     neutral_berry_clusters: int = 6
 
