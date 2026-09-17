@@ -10,7 +10,7 @@ from __future__ import annotations
 import pygame
 
 from ..config import RenderConfig
-from ..core.entities import UNIT_SPECS, BuildingKind, Order, Unit
+from ..core.entities import BUILDING_SPECS, UNIT_SPECS, BuildingKind, Order, Unit
 from ..core.terrain import Terrain
 from ..core.world import World
 from .assets import DECOR_DIRS, Assets, variant_index
@@ -82,6 +82,9 @@ class Renderer:
             int(terrain): self._make_tile(terrain, colour, ts)
             for terrain, colour in TERRAIN_COLOURS.items()
         }
+
+        # Only used on the flat-colour building fallback, so it can stay tiny.
+        self._building_font = pygame.font.SysFont("consolas,menlo,monospace", 14, bold=True)
 
     # ---------------------------------------------------------------- setup
 
@@ -199,6 +202,10 @@ class Renderer:
             if sprite is None:
                 pygame.draw.rect(self.surface, _shade(colour, 0.55), footprint)
                 pygame.draw.rect(self.surface, colour, footprint, width=3)
+                # No art to tell buildings apart by silhouette, so stamp the
+                # kind's tag on the fallback rect.
+                tag = self._building_font.render(BUILDING_SPECS[b.kind].abbr, True, colour)
+                self.surface.blit(tag, tag.get_rect(center=footprint.center))
                 # Overlays belong on both paths -- without this, selection and
                 # training progress disappear whenever the art is missing.
                 self._draw_building_overlays(b, footprint, b.bid == selected_building)

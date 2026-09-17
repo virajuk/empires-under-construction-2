@@ -76,6 +76,9 @@ class BuildingSpec:
     # Whether villagers can deliver a load here. Town Centers accept
     # everything; a future Mill or Mining Camp would accept a subset.
     is_dropoff: bool
+    # Short tag drawn on the building's flat-colour fallback (no sprite art),
+    # so it can still be told apart from other buildings at a glance.
+    abbr: str
     # Units this building can produce. One source of truth: the UI asks it what
     # to offer, and the simulation asks it whether an order is legal.
     trains: tuple[UnitKind, ...] = ()
@@ -92,7 +95,7 @@ UNIT_SPECS: dict[UnitKind, UnitSpec] = {
 BUILDING_SPECS: dict[BuildingKind, BuildingSpec] = {
     BuildingKind.TOWN_CENTER: BuildingSpec(
         "Town Center", "Town Centers", width=2, height=2, hp=600, is_dropoff=True,
-        trains=(UnitKind.VILLAGER,),
+        abbr="TC", trains=(UnitKind.VILLAGER,),
     ),
 }
 

@@ -161,7 +161,10 @@ class Hud:
                          rect, width=1, border_radius=4)
 
         fg = TEXT if enabled else TEXT_OFF
-        label = self.font.render(f"Train {spec.label}", True, fg)
+        # Abbreviated rather than the full building name: the button is narrow
+        # and sits right next to the minimap, so "Town Center: Train Villager"
+        # would run straight into it.
+        label = self.font.render(f"{building.spec.abbr}: Train {spec.label}", True, fg)
         self.surface.blit(label, (rect.x + 12, rect.y + 8))
         cost = self.small.render(_cost_text(spec.cost) + "   [V]", True,
                                  DIM if enabled else TEXT_OFF)

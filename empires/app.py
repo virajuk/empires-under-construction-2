@@ -39,7 +39,7 @@ class App:
         self.player = player
 
         pygame.init()
-        pygame.display.set_caption("EMPIRES")
+        pygame.display.set_caption("EMPIRES UNDER CONSTRUCTION")
         self.screen = pygame.display.set_mode(
             (self.cfg.window_width, self.cfg.window_height), pygame.RESIZABLE
         )
